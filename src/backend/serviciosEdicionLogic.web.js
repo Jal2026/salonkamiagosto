@@ -1,19 +1,63 @@
 // =====================================================
 // KAMISUITE - Edición de Servicios Backend
 // =====================================================
-// VERSION: 1.11.6
-// FECHA: 21 de junio de 2026
+// VERSION: 1.12.0
+// FECHA: 30 de julio de 2026
+//
+// v1.12.0 — BONOS: caducidad y frecuencia por servicio.
+//   Se conectan dos campos nuevos de ServiceCatalog (leer + crear +
+//   actualizar), enteros ≥ 0, mismo patrón que bonoNumero:
+//     · bonusValidityDays     → caducidad del bono en DÍAS naturales.
+//       La emisión (voucherPublicLogic v1.1.0) usa este valor si > 0;
+//       si vacío/0 cae al voucherValidityMonths global (meses).
+//     · bonusUseIntervalDays  → días mínimos entre usos. Se congela en el
+//       bono al emitir; el canje (recepcionProLogic v1.0.42) lo aplica.
+//       0/vacío = LIBRE.
+//   Cero cambios en el resto de campos ni en ninguna otra función.
 //
 // EDITOR CMS-ONLY TOTAL.
 // El editor de servicios opera EXCLUSIVAMENTE sobre ServiceCatalog.
 // YA NO lee ni edita NINGÚN servicio de Wix Bookings.
 // YA NO toca SvMapeoServicios.
-// Los 3 anclas (coloracion/tratamiento/simple) son técnicos: no se
-// listan, no se editan, no aparecen en el editor.
+// El UUID del ancla Wix Bookings del salón es ÚNICO y vive en
+// SalonConfig.wixAnclaId (v1.11.7). El editor lo lee de ahí y lo
+// escribe en cada fila nueva de ServiceCatalog.
 //
 // ARCHIVO: backend/serviciosEdicionLogic.web.js
 //
 // CHANGELOG:
+// v1.11.7 - 🎯 ANCLA desde SalonConfig (fuente de verdad única).
+//           Antes: resolverAncla(family) buscaba en ServiceCatalog una
+//           fila con el mismo family que ya tuviera wixAnclaId. La
+//           práctica ha demostrado que TODOS los servicios del salón
+//           (incluidos externos, simples y complejos) apuntan al mismo
+//           UUID de ancla. La bifurcación por family era humo.
+//           Ahora: resolverAnclaSalon() lee el UUID de
+//           SalonConfig.wixAnclaId (pareja: salonConfigLogic v1.0.5 y
+//           widget_salon_config v1.0.11).
+//           Fallback (por robustez ante salones recién clonados sin
+//           SalonConfig.wixAnclaId poblado): primer wixAnclaId no vacío
+//           de ServiceCatalog, sin filtro por family. Si tampoco hay,
+//           devuelve '' y el editor deja la fila con wixAnclaId vacío.
+//           Cache local a nivel de módulo (_anclaSalonCache) para no
+//           golpear SalonConfig en cada creación/edición dentro de la
+//           misma instancia.
+//           Cambios:
+//             · NEW const CMS_SALON_CONFIG = 'SalonConfig'.
+//             · resolverAncla(family) → resolverAnclaSalon() (sin
+//               parámetro). Lógica reescrita: SalonConfig → fallback
+//               ServiceCatalog sin filtro.
+//             · actualizarServicio (antes línea 526-528): condición
+//               deja de exigir registro.family; ahora se resuelve
+//               siempre que el registro no traiga wixAnclaId.
+//             · crearServicioCatalogo (antes línea 643): llamada sin
+//               parámetro. familyFinal sigue calculándose exactamente
+//               igual porque se sigue grabando en registro.family.
+//             · duplicarServicioCatalogo: sin cambios; sigue copiando
+//               el wixAnclaId de la fila original (nunca lo re-resuelve).
+//           NO se toca ServiceCatalog: las 80 filas existentes siguen
+//           con su wixAnclaId poblado como hoy; el motor recepcionProLogic
+//           las sigue leyendo por fila sin enterarse del cambio.
 // v1.11.6 - ➕ 3 funcionalidades nuevas (conexión a CMS; cálculo fuera).
 //           · DUPLICAR: nueva función duplicarServicioCatalogo({catalogId})
 //             clona la fila como "Copia de <nombre>" con setupUid nuevo,
@@ -92,10 +136,17 @@ import { Permissions, webMethod } from 'wix-web-module';
 import { mediaManager } from 'wix-media-backend';
 import wixData from 'wix-data';
 
-const TAG = '[ServiciosEdicion][1.11.6]';
+const TAG = '[ServiciosEdicion][1.11.7]';
 const CMS_LOG = 'ChangeLogServices';
 const CMS_CATALOG = 'ServiceCatalog';
 const CMS_STAFF = 'StaffConfig';
+const CMS_SALON_CONFIG = 'SalonConfig';
+
+// v1.11.7 — Cache local del UUID del ancla del salón. Se resuelve una
+// vez por instancia y se reutiliza para todas las creaciones/ediciones
+// hasta el próximo cold start. Si SalonConfig.wixAnclaId cambia, basta
+// redeploy o esperar al siguiente arranque del módulo.
+let _anclaSalonCache = null;
 
 // =====================================================
 // HELPER: wix:image:// → URL pública
@@ -271,27 +322,59 @@ function calcularSetAnclas(items) {
 }
 
 // =====================================================
-// HELPER: resolver wixAnclaId por family
+// HELPER v1.11.7: resolver wixAnclaId del salón (fuente única)
 // =====================================================
-async function resolverAncla(family) {
-  if (!family) return '';
+// Lee el UUID del servicio ancla desde SalonConfig.wixAnclaId
+// (fuente de verdad). Si el campo está vacío (por ejemplo salón
+// recién clonado antes de poblar SalonConfig), cae a fallback:
+// primer wixAnclaId no vacío que encuentre en ServiceCatalog, sin
+// filtro por family. Si tampoco hay, devuelve '' y el editor deja
+// la fila con wixAnclaId vacío (recuperable en cuanto se pueble
+// SalonConfig y se edite el servicio de nuevo).
+//
+// Cache local: una vez resuelto un UUID no vacío, se reutiliza para
+// toda la vida del módulo. Si el UUID cambia en SalonConfig se
+// invalida en el siguiente cold start.
+async function resolverAnclaSalon() {
+  if (_anclaSalonCache && typeof _anclaSalonCache === 'string' && _anclaSalonCache.trim()) {
+    return _anclaSalonCache;
+  }
+
+  // 1) Fuente de verdad: SalonConfig.wixAnclaId
   try {
-    const result = await wixData.query(CMS_CATALOG)
-      .eq('family', family)
-      .limit(50)
+    const cfgResult = await wixData.query(CMS_SALON_CONFIG)
+      .limit(1)
       .find({ suppressAuth: true });
 
-    const conAncla = (result.items || []).find(
+    const cfg = (cfgResult.items || [])[0];
+    if (cfg && cfg.wixAnclaId && typeof cfg.wixAnclaId === 'string' && cfg.wixAnclaId.trim()) {
+      _anclaSalonCache = cfg.wixAnclaId.trim();
+      console.log(`${TAG} ⚓ Ancla del salón (SalonConfig): ${_anclaSalonCache}`);
+      return _anclaSalonCache;
+    }
+    console.log(`${TAG} ⚠️ SalonConfig.wixAnclaId vacío o inexistente — probando fallback ServiceCatalog`);
+  } catch (error) {
+    console.error(`${TAG} ⚠️ Error leyendo SalonConfig (no crítico, se probará fallback):`, error.message);
+  }
+
+  // 2) Fallback: primer wixAnclaId no vacío del catálogo (sin filtro por family)
+  try {
+    const catResult = await wixData.query(CMS_CATALOG)
+      .limit(500)
+      .find({ suppressAuth: true });
+
+    const conAncla = (catResult.items || []).find(
       c => c.wixAnclaId && typeof c.wixAnclaId === 'string' && c.wixAnclaId.trim()
     );
     if (conAncla) {
-      console.log(`${TAG} ⚓ Ancla resuelta para family="${family}": ${conAncla.wixAnclaId}`);
-      return conAncla.wixAnclaId.trim();
+      _anclaSalonCache = conAncla.wixAnclaId.trim();
+      console.log(`${TAG} ⚓ Ancla del salón (fallback ServiceCatalog): ${_anclaSalonCache}`);
+      return _anclaSalonCache;
     }
-    console.log(`${TAG} ⚠️ family="${family}" no tiene ninguna fila con wixAnclaId — queda vacío`);
+    console.log(`${TAG} ⚠️ Ningún servicio tiene wixAnclaId — queda vacío. Poblar SalonConfig.wixAnclaId.`);
     return '';
   } catch (error) {
-    console.error(`${TAG} ⚠️ Error resolviendo ancla (no crítico):`, error.message);
+    console.error(`${TAG} ⚠️ Error resolviendo ancla en fallback (no crítico):`, error.message);
     return '';
   }
 }
@@ -363,7 +446,10 @@ export const listarServiciosCompleto = webMethod(
           precioGramo: (typeof c.precioGramo === 'number') ? c.precioGramo : null,
           bonoActivo: c.bonoActivo === true,
           bonoNumero: (typeof c.bonoNumero === 'number') ? c.bonoNumero : null,
-          bonoDescuento: (typeof c.bonoDescuento === 'number') ? c.bonoDescuento : null
+          bonoDescuento: (typeof c.bonoDescuento === 'number') ? c.bonoDescuento : null,
+          // v1.12.0 — caducidad (días) + frecuencia mínima entre usos (días)
+          bonusValidityDays: (typeof c.bonusValidityDays === 'number') ? c.bonusValidityDays : null,
+          bonusUseIntervalDays: (typeof c.bonusUseIntervalDays === 'number') ? c.bonusUseIntervalDays : null
         }));
 
       const staff = await cargarStaffDesdeConfig();
@@ -424,7 +510,10 @@ export const actualizarServicio = webMethod(
       precioGramo,
       bonoActivo,
       bonoNumero,
-      bonoDescuento
+      bonoDescuento,
+      // v1.12.0 — caducidad (días) + frecuencia mínima entre usos (días)
+      bonusValidityDays,
+      bonusUseIntervalDays
     } = payload;
 
     try {
@@ -522,9 +611,27 @@ export const actualizarServicio = webMethod(
           registro.bonoDescuento = isNaN(n) ? null : Math.max(0, Math.min(100, n));
         }
       }
+      // v1.12.0 — caducidad (días naturales) + frecuencia mínima entre usos (días).
+      if (bonusValidityDays !== undefined) {
+        if (bonusValidityDays === null || bonusValidityDays === '') {
+          registro.bonusValidityDays = null;
+        } else {
+          const n = Number(bonusValidityDays);
+          registro.bonusValidityDays = isNaN(n) ? null : Math.max(0, Math.floor(n));
+        }
+      }
+      if (bonusUseIntervalDays !== undefined) {
+        if (bonusUseIntervalDays === null || bonusUseIntervalDays === '') {
+          registro.bonusUseIntervalDays = null;
+        } else {
+          const n = Number(bonusUseIntervalDays);
+          registro.bonusUseIntervalDays = isNaN(n) ? null : Math.max(0, Math.floor(n));
+        }
+      }
 
-      if ((!registro.wixAnclaId || !registro.wixAnclaId.trim()) && registro.family) {
-        registro.wixAnclaId = await resolverAncla(registro.family);
+      // v1.11.7 — Fuente de verdad: SalonConfig.wixAnclaId (no más family).
+      if (!registro.wixAnclaId || !registro.wixAnclaId.trim()) {
+        registro.wixAnclaId = await resolverAnclaSalon();
       }
 
       await wixData.update(CMS_CATALOG, registro, { suppressAuth: true });
@@ -579,7 +686,10 @@ export const actualizarServicio = webMethod(
           precioGramo: (typeof registro.precioGramo === 'number') ? registro.precioGramo : null,
           bonoActivo: registro.bonoActivo === true,
           bonoNumero: (typeof registro.bonoNumero === 'number') ? registro.bonoNumero : null,
-          bonoDescuento: (typeof registro.bonoDescuento === 'number') ? registro.bonoDescuento : null
+          bonoDescuento: (typeof registro.bonoDescuento === 'number') ? registro.bonoDescuento : null,
+          // v1.12.0
+          bonusValidityDays: (typeof registro.bonusValidityDays === 'number') ? registro.bonusValidityDays : null,
+          bonusUseIntervalDays: (typeof registro.bonusUseIntervalDays === 'number') ? registro.bonusUseIntervalDays : null
         }
       };
 
@@ -627,6 +737,9 @@ export const crearServicioCatalogo = webMethod(
       bonoActivo,
       bonoNumero,
       bonoDescuento,
+      // v1.12.0 — caducidad (días) + frecuencia mínima entre usos (días)
+      bonusValidityDays,
+      bonusUseIntervalDays,
       base64Data,
       fileName,
       mimeType
@@ -640,7 +753,8 @@ export const crearServicioCatalogo = webMethod(
       }
 
       const familyFinal = family || 'simple';
-      const wixAnclaId = await resolverAncla(familyFinal);
+      // v1.11.7 — El ancla ya no depende de family; se lee de SalonConfig.
+      const wixAnclaId = await resolverAnclaSalon();
 
       const registro = {
         label: label.trim(),
@@ -692,6 +806,17 @@ export const crearServicioCatalogo = webMethod(
           if (bonoDescuento === undefined || bonoDescuento === null || bonoDescuento === '') return null;
           const n = Number(bonoDescuento);
           return isNaN(n) ? null : Math.max(0, Math.min(100, n));
+        })(),
+        // v1.12.0 — caducidad (días naturales) + frecuencia mínima entre usos (días)
+        bonusValidityDays: (() => {
+          if (bonusValidityDays === undefined || bonusValidityDays === null || bonusValidityDays === '') return null;
+          const n = Number(bonusValidityDays);
+          return isNaN(n) ? null : Math.max(0, Math.floor(n));
+        })(),
+        bonusUseIntervalDays: (() => {
+          if (bonusUseIntervalDays === undefined || bonusUseIntervalDays === null || bonusUseIntervalDays === '') return null;
+          const n = Number(bonusUseIntervalDays);
+          return isNaN(n) ? null : Math.max(0, Math.floor(n));
         })()
       };
 
@@ -763,7 +888,10 @@ export const crearServicioCatalogo = webMethod(
           precioGramo: (typeof inserted.precioGramo === 'number') ? inserted.precioGramo : null,
           bonoActivo: inserted.bonoActivo === true,
           bonoNumero: (typeof inserted.bonoNumero === 'number') ? inserted.bonoNumero : null,
-          bonoDescuento: (typeof inserted.bonoDescuento === 'number') ? inserted.bonoDescuento : null
+          bonoDescuento: (typeof inserted.bonoDescuento === 'number') ? inserted.bonoDescuento : null,
+          // v1.12.0
+          bonusValidityDays: (typeof inserted.bonusValidityDays === 'number') ? inserted.bonusValidityDays : null,
+          bonusUseIntervalDays: (typeof inserted.bonusUseIntervalDays === 'number') ? inserted.bonusUseIntervalDays : null
         }
       };
 

@@ -1,8 +1,50 @@
 // =====================================================
 // KAMISUITE — Page Code: /reservar/{slug}
 // =====================================================
-// VERSION: 0.3.2
-// FECHA: 12 de junio de 2026
+// VERSION: 0.3.5
+// FECHA: 3 de agosto de 2026
+//
+// v0.3.5:
+//   + Reenvía el SEGUNDO PROFESIONAL para los complementos, en los dos
+//     handlers. Este page code pasa los campos por lista blanca explícita,
+//     así que sin estas líneas el dato muere aquí y no llega al backend.
+//       · 'pedir-huecos' → `proExtraId` y `principalSetupUid`
+//         (getHuecosDisponibles v0.9.0 los necesita para partir la cita en
+//          dos tramos y calcular el punto de corte desde el mapeoFases).
+//       · 'reservar'     → `staffExtraId`
+//         (crearReservaPublica v0.9.0 estampa staffId en las fases del
+//          tramo posterior tras crear la reserva; el motor de packs
+//          compartido NO se modifica).
+//     Bundle pareja: kamisuite-widget-bundle v2.0.17. Con los campos
+//     vacíos, comportamiento v0.3.4 byte a byte. Cambio quirúrgico: tres
+//     propiedades añadidas a los objetos ya existentes. Cero cambios en el
+//     resto de los handlers, en 'navigate-back', en imports ni en helpers.
+//     Se CONSERVAN `varianteSel` (v0.3.3), `durationMin` (v0.3.4) e
+//     `idStaffPermitidos` (v0.3.2).
+//
+// v0.3.4:
+//   + Reenvía `durationMin` (duración total de la cita) desde el evento
+//     'reservar' del widget al backend crearReservaPublica. El backend
+//     v0.7.9 lo usa para resolver 'Cualquiera' comprobando que el
+//     profesional esté libre en el bloque continuo COMPLETO que
+//     getHuecosDisponibles ya validó (máxima seguridad; el PROCESO no se
+//     libera al público en el arranque de V2). Sin este campo, el backend
+//     cae a la duración base del principal (riesgo de solape en cascadas
+//     con complementos). Cambio quirúrgico: UNA propiedad añadida al
+//     objeto pasado a crearReservaPublica. Cero cambios en el resto del
+//     handler ni en imports, ni en los otros handlers ('pedir-huecos',
+//     'navigate-back'), ni en helpers. Se CONSERVA `varianteSel` de v0.3.3.
+//
+// v0.3.3:
+//   + Reenvía `varianteSel` desde el evento 'reservar' del widget al
+//     backend crearReservaPublica. Requerido para el soporte de variantes
+//     del servicio PRINCIPAL en el widget público (kamisuite-widget-bundle
+//     v2.0.14, widgetPublicoLogic v0.7.5). Sin esta línea, la variante
+//     elegida se pierde en el page code y el backend crea la reserva con
+//     el precio/duración base del servicio. Cambio quirúrgico: UNA
+//     propiedad añadida al objeto pasado a crearReservaPublica. Cero
+//     cambios en el resto del handler ni en imports, ni en los otros
+//     handlers ('pedir-huecos', 'navigate-back'), ni en helpers.
 //
 // v0.3.2:
 //   + Reenvía `idStaffPermitidos` desde el evento 'pedir-huecos' del
@@ -43,7 +85,7 @@ import {
   crearReservaPublica
 } from 'backend/widgetPublicoLogic.web';
 
-const TAG = '[ReservarPage][v0.3.2]';
+const TAG = '[ReservarPage][v0.3.4]';
 
 // Estado de la página
 let ctx = {
@@ -210,7 +252,15 @@ function montarCustomElement() {
         fecha: d.fecha,
         proId: d.proId,
         durationMin: d.durationMin,
-        idStaffPermitidos: Array.isArray(d.idStaffPermitidos) ? d.idStaffPermitidos : []
+        idStaffPermitidos: Array.isArray(d.idStaffPermitidos) ? d.idStaffPermitidos : [],
+        // v0.3.5 — Segundo profesional para los complementos. Cuando llega
+        // informado, el backend v0.9.0 parte la cita en dos tramos y valida
+        // cada uno contra su profesional. Vacío → motor mono-profesional,
+        // comportamiento v0.3.4 idéntico. `principalSetupUid` es necesario
+        // para que el backend calcule el punto de corte a partir del
+        // mapeoFases del servicio.
+        proExtraId: d.proExtraId || '',
+        principalSetupUid: d.principalSetupUid || ''
       });
       // Devolver al widget vía atributo dedicado.
       // Patrón: cada respuesta tiene un requestId que el widget genera
@@ -244,8 +294,27 @@ function montarCustomElement() {
         horaHHmm: d.horaHHmm,
         principalSetupUid: d.principalSetupUid,
         complementosSetupUid: d.complementosSetupUid || [],
+        // v0.3.3 — Variante del servicio principal (si el servicio tiene
+        // hasVariants=true en ServiceCatalog). El widget bundle v2.0.14
+        // la construye a partir del chip elegido con el patrón
+        // {idx, label, price, duration} — copia literal del formato que
+        // usa recepcionProCMS_widget v1.1.54 líneas 3817-3831. Si no hay
+        // variante (servicio simple sin variantes), viaja null y el
+        // backend crearPackReserva usa el precio/duración base del
+        // ServiceCatalog. Retrocompatibilidad total.
+        varianteSel: d.varianteSel || null,
+        // v0.3.4 — Duración TOTAL de la cita (la misma que el widget envía
+        // a getHuecosDisponibles). El backend v0.7.9 la usa para resolver
+        // 'Cualquiera' comprobando el bloque continuo completo. Si no
+        // llega (bundle antiguo), el backend cae a la duración base.
+        durationMin: d.durationMin,
         staffId: d.staffId,
         staffName: d.staffName || '',
+        // v0.3.5 — Segundo profesional para los complementos (recuperación
+        // del `empleado2Id` de V1). Vacío cuando no hay reparto → el
+        // backend crea la reserva con toda la cita al profesional
+        // principal, comportamiento v0.3.4 idéntico.
+        staffExtraId: d.staffExtraId || '',
         contactDetails: d.contactDetails || {},
         memberContactId: d.memberContactId || ctx.memberInfo?.contactId || '',
         notas: d.notas || ''

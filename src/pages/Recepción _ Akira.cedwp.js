@@ -1,320 +1,350 @@
-// =====================================================
-// KAMISUITE - Page Code: AKIRA Console IA
-// Página: /kamisuite-console
-// =====================================================
-// VERSION: 1.4.0
-// FECHA: 23 Abril 2026
-//
-// CHANGELOG:
-//   v1.4.0 - ACCIONES: reserva simple añadida
-//     - "reserva" en ACTION_CATEGORIES
-//     - buildConfirmMessage para reserva con servicio + empleado + fecha + hora + cliente
-//     - handleActionExecute llama ejecutarReservaSimple
-//   v1.3.0 - ACCIONES: flujo de confirmación + bloqueo
-//   v1.2.0 - SPLIT: akiraClassify + akiraRespond
-//   v1.1.0 - Soporte historial conversacional
-//   v1.0.0 - Versión inicial
-// =====================================================
+/* ═══════════════════════════════════════════════════════════════════════════
+ * KAMISUITE — AKIRA · Page Code
+ * Página:   AKIRA (Consultor)
+ * VERSION:  1.8.0
+ * FECHA:    15 Agosto 2026
+ *
+ * CAMBIOS v1.7.0 → v1.8.0 — SALUDO DESDE EL CMS.
+ *   Los textos de bienvenida de cada plano llegan ahora en `abrir.planos`
+ *   (akiraLogic v1.8.0, campos welcomeTitle/welcomeText de AkiraAlignment,
+ *   editables desde el Entrenador). Este page code los superpone a los
+ *   valores que ya calculaba con el nombre del salón. Lo que el salón no
+ *   haya escrito no se envía, y el custom element conserva su texto de
+ *   fábrica: nunca se queda la pantalla sin saludo.
+ *
+ * CAMBIOS v1.6.0 → v1.7.0 — PLANO DE ARRANQUE Y TEXTOS POR PLANO.
+ *   El plano ya no lo fija este archivo ni el alignment publicado: lo elige
+ *   el usuario con los chips de la topbar (akiraConsole v1.1.0) y viaja en
+ *   `modo` hasta akiraLogic v1.7.0, que decide alignment, corpus y si hay
+ *   herramientas de datos. Aquí solo se manda el plano DE ARRANQUE ('asesor')
+ *   y los textos que dependen del salón.
+ *   Se añade `brandPlanes`: los textos de bienvenida, subtítulo, placeholder
+ *   y "pensando" de cada plano. El custom element trae sus valores por
+ *   defecto; esto solo mete el nombre del salón donde toca.
+ *
+ * CAMBIOS v1.5.0 → v1.6.0: se oculta la bola flotante del chat IA de Wix en
+ * la página de AKIRA (ocultarBolaChatIA). ⚠️ El ID es por página: verificar
+ * CHAT_IA_ID contra el ID real de la bola en /akira.
+ *
+ * CAMBIOS v1.4.0 → v1.5.0 — FIX: EL HISTORIAL NO SALÍA AL ABRIR.
+ *   La sidebar aparecía vacía y solo se poblaba tras la primera respuesta.
+ *   Causa: se dependía del emit 'akira-load-chats' del custom element, que
+ *   puede dispararse antes de que los listeners estén enganchados y se pierde
+ *   en silencio. CATHOVIA no depende del emit: tiene cargarEstadoInicial(),
+ *   que pide el estado por su cuenta 400ms después del config. Restaurado.
+ *
+ * CAMBIOS v1.3.0 → v1.4.0: la voz ya NO pasa por aquí. El custom element
+ * llama a /_functions/akiraTts por fetch, como CATHOVIA. Listener eliminado.
+ *
+ * CAMBIOS v1.2.0 → v1.3.0: el logo YA NO se manda desde aquí. Vive en
+ * DEFAULT_BRAND del custom element, patrón literal de CATHOVIA. Este page
+ * code solo envía lo que varía por salón (el nombre).
+ *
+ * CAMBIOS v1.0.0 → v1.1.0: voz activada (akiraTTS.web.js). Listener
+ * 'akira-tts' + TTS_ENABLED=true. La voz concreta sale de SalonConfig.
+ *
+ * ───────────────────────────────────────────────────────────────────────────
+ * QUÉ HACE (Y QUÉ NO HACE) ESTE ARCHIVO
+ * ───────────────────────────────────────────────────────────────────────────
+ *
+ * Bridge entre el custom element <akira-console> y backend/akiraLogic.web.js.
+ *
+ * ⚠️ NO GESTIONA LAS PREGUNTAS. Esto es deliberado y es la lección más cara
+ * de CATHOVIA: el widget llama DIRECTAMENTE a /_functions/akiraAsk por fetch.
+ * Si aquí se añadiera un listener 'akira-query' que también llamara al
+ * backend, cada pregunta viajaría por DOS rutas y dispararía DOS llamadas a
+ * Anthropic en paralelo, con doble coste. Pasó en CATHOVIA v1.6.1 y el log de
+ * producción lo confirmó (dos "askCathoviaCore IN" idénticos). NO AÑADIR.
+ *
+ * Este page code solo sirve: config inicial, historial, lista de chats y
+ * borrado. Todo por setAttribute, que es seguro para estos payloads.
+ *
+ * ───────────────────────────────────────────────────────────────────────────
+ * MULTI-TENANT
+ * ───────────────────────────────────────────────────────────────────────────
+ * Cada cuenta Wix ES un salón. NO hay cursoId, salonId ni parámetro de
+ * tenant. SalonConfig (fila única) es el contexto y lo resuelve el backend.
+ * El skin, el brandName y el logo salen de ahí — cero hardcoding.
+ *
+ * ───────────────────────────────────────────────────────────────────────────
+ * CONTROL DE ACCESO
+ * ───────────────────────────────────────────────────────────────────────────
+ * Por permisos de página de Wix Members (decisión de Jal, 17-Jul-2026).
+ * El backend expone akiraVerificarAcceso (PIN + StaffConfig.accessLevel)
+ * por si algún día se quiere el patrón de Recepción PRO; hoy NO se usa.
+ *
+ * ───────────────────────────────────────────────────────────────────────────
+ * ELEMENT ID
+ * ───────────────────────────────────────────────────────────────────────────
+ * Este archivo asume que el Custom Element tiene ID #akiraConsole y
+ * tag name 'akira-console'. Si en el editor le pones otro ID, cambia
+ * EL_ID abajo. Es lo único que hay que tocar.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */
 
-import wixUsers from 'wix-users';
-import wixWindow from 'wix-window';
-import { akiraClassify, akiraRespond } from 'backend/consoleIA.web';
-import { ejecutarBloqueo, ejecutarReservaSimple, ejecutarReservaColor } from 'backend/akiraAcciones.web';
+import { currentMember } from 'wix-members-frontend';
+import {
+  akiraAbrir,
+  akiraListarChats,
+  akiraAbrirChat,
+  akiraBorrarChat
+} from 'backend/akiraLogic.web';
 
-const TAG = '[PageCode_ConsoleIA][1.5.0]';
+// ── CONFIGURACIÓN ──────────────────────────────────────────────────────────
 
-// Categorías que son acciones (no consultas)
-const ACTION_CATEGORIES = new Set(['bloqueo', 'reserva', 'reserva_color']);
+const EL_ID = '#akiraConsole';   // ← ajustar si el Element ID del editor difiere
 
-// Acción pendiente de confirmación
-let pendingAction = null;
+// Plano DE ARRANQUE. UN SOLO AKIRA con varios planos de utilidad: el usuario
+// cambia entre ellos con los chips de la topbar, así que esto solo decide con
+// cuál se abre la pantalla. Valores válidos: 'asesor' | 'ayuda'.
+const MODO = 'asesor';
 
-// ─────────────────────────────────────────────
-// INICIALIZACIÓN
-// ─────────────────────────────────────────────
+// Voz. Requiere backend/akiraTTS.web.js + secret GOOGLE_SA_JSON.
+// La VOZ CONCRETA no se elige aquí: sale de SalonConfig.voiceId (cero
+// hardcoding). Este flag solo enciende o apaga la funcionalidad.
+const TTS_ENABLED = true;
 
-$w.onReady(async () => {
-  console.log(`${TAG} onReady`);
+const V = 'AKIRA Page v1.8.0';
 
-  const loggedIn = wixUsers.currentUser.loggedIn;
-  if (!loggedIn) {
-    console.warn(`${TAG} Usuario no autenticado — redirigiendo`);
-    wixWindow.openLightbox('Login').catch(() => {});
+// Bola flotante del chat IA nativo de Wix. Se oculta en la página de AKIRA:
+// no queremos dos asistentes compitiendo en pantalla.
+// ⚠️ EL ID ES POR PÁGINA. Este viene de otra página (/recepcioncomunicaciones)
+// y muy probablemente NO coincide con el de /akira. Verificar el ID real:
+// clic en la bola dentro del editor → panel de propiedades → ID. Si no
+// coincide, el hide() falla silenciosamente (el try/catch lo absorbe) y la
+// bola seguirá visible.
+const CHAT_IA_ID = '#f6B6E28D52B24De6Aab3Ff2Ccad8E2291';
+
+// ═══════════════════════════════════════════════════════════════════════════
+
+$w.onReady(async function () {
+  console.log(`[${V}] onReady`);
+
+  // Ocultar la bola del chat IA de Wix. Refuerzos porque Wix a veces pinta ese
+  // elemento unos ms después del onReady (mismo patrón que la página que ya
+  // lo tiene funcionando).
+  ocultarBolaChatIA();
+  setTimeout(ocultarBolaChatIA, 500);
+  setTimeout(ocultarBolaChatIA, 1500);
+
+  let el;
+  try {
+    el = $w(EL_ID);
+  } catch (e) {
+    console.error(`[${V}] No existe el custom element ${EL_ID}. Revisa el Element ID en el editor.`);
     return;
   }
 
-  console.log(`${TAG} Usuario autenticado: ${wixUsers.currentUser.id}`);
+  // ── Helper robusto para setAttribute ─────────────────────────────────────
+  const trySetAttr = (name, value, retries = 3) => {
+    try {
+      el.setAttribute(name, value);
+      return true;
+    } catch (err) {
+      console.warn(`[${V}] setAttribute("${name}") fallo:`, err.message);
+      if (retries > 0) {
+        setTimeout(() => trySetAttr(name, value, retries - 1), 200);
+      } else {
+        console.error(`[${V}] setAttribute("${name}") ABANDONO tras reintentos`);
+      }
+      return false;
+    }
+  };
 
-  $w('#htmlConsoleIA').onMessage(handleWidgetMessage);
-  $w('#htmlConsoleIA').postMessage({ type: 'SESSION_READY' });
+  // ── Resolver usuario ─────────────────────────────────────────────────────
+  // userId alimenta AkiraSessions.usuarioId → historial POR PERSONA.
+  let userId = '';
+  let userName = '';
+  try {
+    const member = await currentMember.getMember();
+    if (member) {
+      userId = member._id || '';
+      userName = (member.profile && member.profile.nickname) || member.loginEmail || '';
+    }
+  } catch (_) { /* anónimo */ }
+  console.log(`[${V}] user: ${userId ? userId + ' / ' + userName : 'anónimo'}`);
 
-  console.log(`${TAG} Console IA lista`);
+  // ═════════════════════════════════════════════════════════════════════════
+  // LISTENERS — REGISTRAR **ANTES** DE ENVIAR CONFIG
+  // El CE emite akira-load-chats / akira-open-chat en cuanto recibe config.
+  // Si los listeners no están puestos, esos eventos se pierden.
+  // ═════════════════════════════════════════════════════════════════════════
+
+  // NO hay listener 'akira-query'. Ver aviso de la cabecera. NO AÑADIR.
+
+  el.on('akira-open-chat', async (event) => {
+    const { sessionId } = event.detail || {};
+    if (!sessionId) return;
+    try {
+      const result = await akiraAbrirChat({ sessionId });
+      if (result.ok) {
+        // _ts fuerza un JSON distinto en cada envío. Sin él, reabrir el mismo
+        // chat manda un atributo idéntico y el browser NO dispara
+        // attributeChangedCallback (spec del DOM). Además, el polling del 504
+        // depende de que este atributo llegue SIEMPRE. (CATHOVIA v1.4.3)
+        trySetAttr('history', JSON.stringify({
+          _ts: Date.now(),
+          sessionId: result.sessionId,
+          mensajes: result.mensajes || []
+        }));
+      } else {
+        console.warn(`[${V}] akiraAbrirChat ERR: ${result.error}`);
+      }
+    } catch (err) {
+      console.error(`[${V}] akiraAbrirChat EXCEPTION:`, err);
+    }
+  });
+
+  el.on('akira-load-chats', async () => {
+    try {
+      const result = await akiraListarChats({ userId });
+      trySetAttr('chats', JSON.stringify(result.chats || []));
+    } catch (err) {
+      console.error(`[${V}] akiraListarChats EXCEPTION:`, err);
+    }
+  });
+
+  el.on('akira-delete-chat', async (event) => {
+    const { sessionId } = event.detail || {};
+    if (!sessionId) return;
+    try {
+      const result = await akiraBorrarChat({ sessionId, userId });
+      if (!result.ok) console.error(`[${V}] akiraBorrarChat ERR: ${result.error}`);
+      // Refrescar la lista desde el backend (autoritativo sobre el optimista).
+      const listing = await akiraListarChats({ userId });
+      trySetAttr('chats', JSON.stringify(listing.chats || []));
+    } catch (err) {
+      console.error(`[${V}] akiraBorrarChat EXCEPTION:`, err);
+    }
+  });
+
+  el.on('akira-ready', () => {
+    console.log(`[${V}] custom element listo`);
+  });
+
+  // ── VOZ ──
+  // NO hay listener 'akira-tts'. El custom element llama DIRECTAMENTE a
+  // /_functions/akiraTts por fetch, igual que hace CATHOVIA con egaelTts.
+  // Motivo: el audio viaja en base64 y setAttribute TRUNCA payloads grandes.
+  // NO AÑADIR un listener aquí: duplicaría la llamada y el coste.
+
+  console.log(`[${V}] listeners registrados`);
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // ABRIR CONSOLA Y ENVIAR CONFIG
+  // ═════════════════════════════════════════════════════════════════════════
+
+  let abrir;
+  try {
+    abrir = await akiraAbrir();
+    if (!abrir.ok) {
+      console.error(`[${V}] akiraAbrir ERR:`, abrir.error);
+      setTimeout(() => trySetAttr('systemError', abrir.error || 'No se pudo abrir AKIRA.'), 100);
+      return;
+    }
+  } catch (err) {
+    console.error(`[${V}] akiraAbrir EXCEPTION:`, err);
+    setTimeout(() => trySetAttr('systemError', 'Error de conexión: ' + err.message), 100);
+    return;
+  }
+
+  console.log(`[${V}] salón="${abrir.brandName}" skin=${abrir.widgetSkin} align=v${abrir.alignment ? abrir.alignment.version : '-'}`);
+
+  if (!abrir.alignment) {
+    console.warn(`[${V}] Sin AkiraAlignment publicado — AKIRA usará su prompt por defecto.`);
+  }
+
+  // Marca. El LOGO y el nombre de AKIRA viven en el custom element
+  // (DEFAULT_BRAND), igual que en CATHOVIA: son la marca del producto y no
+  // dependen de este page code. Aquí solo se envía lo que SÍ varía por salón:
+  // el nombre del salón, que sale de SalonConfig.
+  const brand = {
+    sub: abrir.brandName || ''
+  };
+
+  // Textos por plano. Solo se envía lo que depende del salón; el resto
+  // (bienvenida, placeholder, "pensando") vive en BRAND_PLANOS del custom
+  // element, que es la marca del producto y es igual en todos los salones.
+  const brandPlanes = {
+    asesor: {
+      sub: abrir.brandName ? `${abrir.brandName} · Asesor` : 'Asesor',
+      welcomeTitle: abrir.brandName ? `AKIRA · ${abrir.brandName}` : 'AKIRA · Asesor'
+    },
+    ayuda: {
+      sub: abrir.brandName ? `${abrir.brandName} · Ayuda` : 'Ayuda',
+      welcomeTitle: abrir.brandName ? `AKIRA · ${abrir.brandName}` : 'AKIRA · Ayuda'
+    }
+  };
+
+  // Lo escrito por el salón en el Entrenador manda sobre lo calculado aquí.
+  // Solo llegan las claves con contenido (el backend filtra los vacíos), así
+  // que un campo sin rellenar deja intacto el texto por defecto.
+  const planosCms = abrir.planos || {};
+  Object.keys(planosCms).forEach((p) => {
+    brandPlanes[p] = Object.assign({}, brandPlanes[p] || {}, planosCms[p] || {});
+  });
+
+  const configPayload = JSON.stringify({
+    userId,
+    userName,
+    modo: MODO,
+    sessionId: null,          // cada visita arranca en welcome (CATHOVIA v1.5.3)
+    skin: abrir.widgetSkin || 'niebla',
+    ttsEnabled: TTS_ENABLED,
+    brand,
+    brandPlanes
+  });
+
+  // Carga inicial FORZADA del historial.
+  //
+  // POR QUÉ HACE FALTA: el custom element emite 'akira-load-chats' desde
+  // _applyConfig, pero ese emit puede dispararse antes de que el navegador
+  // haya terminado de enganchar los listeners de este page code — y entonces
+  // se pierde en silencio. Síntoma: la sidebar aparece vacía al abrir y solo
+  // se puebla tras la primera respuesta (que emite de nuevo el evento).
+  //
+  // La solución es la de CATHOVIA (cargarEstadoInicial): NO depender del emit.
+  // El page code pide los chats por su cuenta y los empuja con setAttribute.
+  const cargarEstadoInicial = async () => {
+    try {
+      const chats = await akiraListarChats({ userId });
+      trySetAttr('chats', JSON.stringify(chats.chats || []));
+      console.log(`[${V}] estado inicial: ${(chats.chats || []).length} conversaciones`);
+    } catch (err) {
+      console.error(`[${V}] cargarEstadoInicial EXCEPTION:`, err);
+    }
+  };
+
+  setTimeout(() => {
+    console.log(`[${V}] enviando config al custom element`);
+    trySetAttr('config', configPayload);
+    setTimeout(cargarEstadoInicial, 400);
+  }, 150);
 });
 
-// ─────────────────────────────────────────────
-// HANDLER: Mensajes del widget
-// ─────────────────────────────────────────────
-
-async function handleWidgetMessage(event) {
-  const data = event.data;
-  if (!data || !data.type) return;
-
-  console.log(`${TAG} Mensaje recibido: ${data.type}`);
-
-  if (data.type === 'AKIRA_QUERY') {
-    await handleQuery(data.query, data.messageId, data.history);
-  }
-
-  if (data.type === 'AKIRA_ACTION_EXECUTE') {
-    await handleActionExecute(data.messageId);
-  }
-
-  if (data.type === 'AKIRA_ACTION_CANCEL') {
-    handleActionCancel(data.messageId);
-  }
-}
-
-// ─────────────────────────────────────────────
-// HANDLER: Consulta o Acción
-// ─────────────────────────────────────────────
-
-async function handleQuery(query, messageId, history) {
-  if (!query || typeof query !== 'string') {
-    sendToWidget({ type: 'AKIRA_ERROR', messageId, error: 'Consulta vacía' });
-    return;
-  }
-
-  const safeHistory = history || [];
-  console.log(`${TAG} handleQuery [${messageId}]: "${query.substring(0, 60)}..." (history: ${safeHistory.length} msgs)`);
-
+function ocultarBolaChatIA() {
   try {
-    // ── FASE 1: Clasificar + fetch datos ──
-    console.log(`${TAG} → Fase 1: akiraClassify...`);
-    const classifyResult = await akiraClassify({ query, history: safeHistory });
-
-    if (!classifyResult.ok) {
-      console.error(`${TAG} akiraClassify error:`, classifyResult.error);
-      sendToWidget({
-        type: 'AKIRA_ERROR', messageId,
-        error: 'Error clasificando la consulta. Inténtalo de nuevo.'
-      });
-      return;
-    }
-
-    const { categoria, params } = classifyResult;
-    console.log(`${TAG} → Fase 1 OK: cat=${categoria} (${classifyResult.tiempoClassify}ms)`);
-
-    // ── ¿ES UNA ACCIÓN? → Flujo de confirmación ──
-    if (ACTION_CATEGORIES.has(categoria)) {
-      console.log(`${TAG} → Acción detectada: ${categoria}`);
-      handleActionProposal(categoria, params, messageId);
-      return;
-    }
-
-    // ── CONSULTA NORMAL → Fase 2: akiraRespond ──
-    console.log(`${TAG} → Fase 2: akiraRespond...`);
-    const respondResult = await akiraRespond({
-      query, categoria, datos: classifyResult.datos, history: safeHistory
-    });
-
-    if (respondResult.ok) {
-      sendToWidget({
-        type: 'AKIRA_RESPONSE', messageId,
-        respuesta: respondResult.respuesta,
-        categoria: respondResult.categoria,
-        timestamp: respondResult.timestamp
-      });
-    } else {
-      console.error(`${TAG} akiraRespond error:`, respondResult.error);
-      sendToWidget({
-        type: 'AKIRA_ERROR', messageId,
-        error: respondResult.respuesta || 'Error generando la respuesta'
-      });
-    }
-
+    $w(CHAT_IA_ID).hide();
+    console.log('[Chat IA] Bola flotante ocultada', { id: CHAT_IA_ID });
   } catch (e) {
-    console.error(`${TAG} handleQuery exception:`, e.message);
-    sendToWidget({
-      type: 'AKIRA_ERROR', messageId,
-      error: 'Error interno. Por favor, inténtalo de nuevo.'
+    console.warn('[Chat IA] No se pudo ocultar. Revisa si el ID existe en esta página.', {
+      id: CHAT_IA_ID
     });
   }
 }
 
-// ─────────────────────────────────────────────
-// ACCIONES: Propuesta de confirmación
-// ─────────────────────────────────────────────
-
-function handleActionProposal(categoria, params, messageId) {
-  const confirmMessage = buildConfirmMessage(categoria, params);
-
-  if (!confirmMessage) {
-    sendToWidget({
-      type: 'AKIRA_ERROR', messageId,
-      error: 'No se pudieron extraer los datos necesarios para esta acción.'
-    });
-    return;
-  }
-
-  pendingAction = { categoria, params, messageId };
-  console.log(`${TAG} → Propuesta: ${confirmMessage}`);
-
-  sendToWidget({
-    type: 'AKIRA_ACTION_CONFIRM', messageId,
-    message: confirmMessage, action: categoria, params
-  });
-}
-
-// ── Días/meses para mensajes ──
-const DIAS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
-const MESES = ['', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
-  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-
-function formatFechaConfirm(fecha) {
-  if (!fecha) return '?';
-  const d = new Date(fecha + 'T12:00:00Z');
-  const dow = d.getUTCDay();
-  const [, m, dd] = fecha.split('-');
-  return `${DIAS[dow]} ${parseInt(dd)} de ${MESES[parseInt(m)]}`;
-}
-
-function buildConfirmMessage(categoria, params) {
-  // ── BLOQUEO ──
-  if (categoria === 'bloqueo') {
-    const empleado = params.empleado;
-    const fecha = params.fechaISO || params.fecha;
-    if (!empleado || !fecha) return null;
-    const d = new Date(fecha + 'T12:00:00Z');
-    const dow = d.getUTCDay();
-    if (dow === 0) return `El domingo ${formatFechaConfirm(fecha)} el salón ya está cerrado.`;
-    const horario = dow === 6 ? '10:00-14:00' : '10:00-20:00';
-    return `¿Bloquear el ${formatFechaConfirm(fecha)} para ${empleado}? (día completo, ${horario})`;
-  }
-
-  // ── RESERVA SIMPLE ──
-  if (categoria === 'reserva') {
-    const servicio = params.servicio || params.serviceName || '?';
-    const empleado = params.empleado;
-    const fecha = params.fechaISO || params.fecha;
-    const hora = params.hora || params.horaHHmm || '?';
-    const cliente = params.cliente || params.nombre || '';
-
-    if (!empleado || !fecha || hora === '?') return null;
-
-    let msg = `¿Reservar ${servicio} con ${empleado} el ${formatFechaConfirm(fecha)} a las ${hora}?`;
-    if (cliente) msg += ` Cliente: ${cliente}.`;
-    return msg;
-  }
-
-  // ── RESERVA COLOR ──
-  if (categoria === 'reserva_color') {
-    const servicio = params.servicio || params.serviceName || '?';
-    const empleado = params.empleado;
-    const fecha = params.fechaISO || params.fecha;
-    const hora = params.hora || params.horaHHmm || '?';
-    const cliente = params.cliente || params.nombre || '';
-    const longitud = params.longitudPelo || 'M';
-    const corte = params.corte;
-
-    if (!empleado || !fecha || hora === '?') return null;
-
-    let msg = `¿Reservar ${servicio} con ${empleado} el ${formatFechaConfirm(fecha)} a las ${hora}?`;
-    if (longitud !== 'M') msg += ` Pelo: ${longitud}.`;
-    if (corte === true || corte === 'si' || corte === 'sí') msg += ' Con corte.';
-    if (cliente) msg += ` Cliente: ${cliente}.`;
-    msg += ' (Modo forzado, sin validar disponibilidad)';
-    return msg;
-  }
-
-  return null;
-}
-
-// ─────────────────────────────────────────────
-// ACCIONES: Ejecutar tras confirmación
-// ─────────────────────────────────────────────
-
-async function handleActionExecute(messageId) {
-  if (!pendingAction) {
-    sendToWidget({ type: 'AKIRA_ERROR', messageId, error: 'No hay acción pendiente.' });
-    return;
-  }
-
-  const { categoria, params } = pendingAction;
-  pendingAction = null;
-
-  console.log(`${TAG} → Ejecutando acción: ${categoria}`);
-
-  try {
-    let result;
-
-    if (categoria === 'bloqueo') {
-      result = await ejecutarBloqueo({
-        empleado: params.empleado,
-        fecha: params.fechaISO || params.fecha
-      });
-    } else if (categoria === 'reserva') {
-      result = await ejecutarReservaSimple({
-        servicio: params.servicio || params.serviceName || '',
-        empleado: params.empleado,
-        fecha: params.fechaISO || params.fecha,
-        hora: params.hora || params.horaHHmm || '',
-        cliente: params.cliente || params.nombre || ''
-      });
-    } else if (categoria === 'reserva_color') {
-      result = await ejecutarReservaColor({
-        servicio: params.servicio || params.serviceName || '',
-        empleado: params.empleado,
-        fecha: params.fechaISO || params.fecha,
-        hora: params.hora || params.horaHHmm || '',
-        longitudPelo: params.longitudPelo || 'M',
-        corte: params.corte || false,
-        cliente: params.cliente || params.nombre || ''
-      });
-    } else {
-      result = { ok: false, error: `Acción "${categoria}" no implementada` };
-    }
-
-    if (result.ok) {
-      sendToWidget({
-        type: 'AKIRA_RESPONSE', messageId,
-        respuesta: result.mensaje, categoria
-      });
-    } else {
-      sendToWidget({
-        type: 'AKIRA_ERROR', messageId,
-        error: result.error || 'Error ejecutando la acción'
-      });
-    }
-  } catch (e) {
-    console.error(`${TAG} handleActionExecute error:`, e.message);
-    sendToWidget({
-      type: 'AKIRA_ERROR', messageId,
-      error: 'Error ejecutando la acción. Inténtalo de nuevo.'
-    });
-  }
-}
-
-// ─────────────────────────────────────────────
-// ACCIONES: Cancelar
-// ─────────────────────────────────────────────
-
-function handleActionCancel(messageId) {
-  pendingAction = null;
-  console.log(`${TAG} → Acción cancelada`);
-  sendToWidget({
-    type: 'AKIRA_RESPONSE', messageId,
-    respuesta: 'Acción cancelada.', categoria: 'cancelado'
-  });
-}
-
-// ─────────────────────────────────────────────
-// UTILIDAD: Enviar mensaje al widget
-// ─────────────────────────────────────────────
-
-function sendToWidget(payload) {
-  try {
-    $w('#htmlConsoleIA').postMessage(payload);
-  } catch (e) {
-    console.error(`${TAG} sendToWidget error:`, e.message);
-  }
-}
+/* ═══════════════════════════════════════════════════════════════════════════
+ * NOTA — CAMPOS CMS QUE REQUIERE LA VOZ
+ * ═══════════════════════════════════════════════════════════════════════════
+ * SalonConfig solo necesita UN campo para que la voz sea configurable por
+ * salón sin tocar código:
+ *     voiceId     Texto   — p.ej. 'es-ES-Chirp3-HD-Leda'
+ *
+ * OPCIONALES (igual que en CATHOVIA, donde tampoco existen en el CMS):
+ *     voiceRate   Número  — velocidad. Solo Neural2. Default 1.0
+ *     voicePitch  Número  — tono.      Solo Neural2. Default 0.0
+ * Si no existen, akiraTTS cae a los defaults sin fallar. Las voces Chirp 3 HD
+ * ignoran rate y pitch de todos modos: con voiceId basta.
+ * akiraListVoices() devuelve el catálogo completo para pintar el selector.
+ * ═══════════════════════════════════════════════════════════════════════════
+ */

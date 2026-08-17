@@ -1,14 +1,28 @@
 // =====================================================
-// HTTP FUNCTIONS - Descarga Excel/PDF + WhatsApp Webhook
+// HTTP FUNCTIONS - Descarga Excel/PDF + WhatsApp Webhook + AKIRA
 // =====================================================
 // Archivo: backend/http-functions.js
 // URLs:
 //   https://www.hair-times.com/_functions/descargarExcel?desde=2026-01-01&hasta=2026-01-31
 //   https://www.hair-times.com/_functions/descargarPdf?desde=2026-01-01&hasta=2026-01-31
 //   https://www.hair-times.com/_functions/whatsappWebhook  (GET=verificación, POST=mensajes entrantes)
+//   https://www.hair-times.com/_functions/akiraAsk         (POST=pregunta a AKIRA)
+//   https://www.hair-times.com/_functions/akiraTts         (POST=voz de AKIRA)
 //
 // CHANGELOG
 // ---------
+// v1.3.0 (17-Jul-2026)
+//   - Añadido POST post_akiraTts() — voz de AKIRA (Google Cloud TTS)
+//   - Añadido import de akiraSynthesize desde backend/akiraTTS.web
+//   - Aditivo: Excel, PDF, WhatsApp y dumpReservasV1 intactos
+//
+// v1.2.0 (17-Jul-2026)
+//   - Añadido POST post_akiraAsk() — endpoint de AKIRA V2 (modo Consultor)
+//   - Añadido import de askAkiraCore desde backend/akiraLogic.web
+//   - CERO cambios en Excel, PDF, WhatsApp Webhook y dumpReservasV1:
+//     este archivo es aditivo. Los endpoints existentes quedan intactos.
+//   - ok/badRequest/serverError ya estaban importados: no se toca la línea.
+//
 // v1.1.0 (8-May-2026)
 //   - Añadido GET  get_whatsappWebhook() — verificación Meta webhook
 //   - Añadido POST post_whatsappWebhook() — recepción mensajes entrantes
@@ -20,15 +34,137 @@ import wixData from 'wix-data';
 import * as XLSX from 'xlsx';
 import { jsPDF } from 'jspdf';
 import { getSecret } from 'wix-secrets-backend';
+import { askAkiraCore } from 'backend/akiraLogic.web';
+// Función PURA, no el webMethod: http-functions corre SIN sesión de miembro
+// y un webMethod con SiteMember rechazaría la llamada.
+import { akiraSynthesizeCore } from 'backend/akiraTTS.web';
 
 const COLECCION_PAGOS = 'PaymentReservations';
 const TAG_WA = '[WhatsApp Webhook]';
+const TAG_AKIRA = '[AKIRA HTTP]';
 
 // ── Caché de verify token ───────────────────────────────────
 let _verifyTokenCache = null;
 let _verifyTokenCacheTs = 0;
 const VERIFY_TOKEN_CACHE_TTL = 30 * 60 * 1000; // 30 min
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AKIRA — Pregunta (POST)          ◄── NUEVO v1.2.0
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /_functions/akiraAsk
+// Body:      { sessionId, query, userId, userName, modo }
+// Respuesta: { ok, respuesta, sessionId, error? }
+//
+// PARA QUÉ EXISTE:
+//   El custom element <akira-console> llama aquí DIRECTAMENTE con fetch(),
+//   sin pasar por el Page Code. Dos razones medidas en producción (CATHOVIA):
+//     1. setAttribute del Page Code TRUNCA payloads grandes. Las respuestas
+//        del consultor con desgloses son largas; por HTTP llegan enteras.
+//     2. Elimina un salto de red (widget → HTTP → backend).
+//
+// EL TECHO DE 14s — LO QUE ESTE ENDPOINT **NO** ARREGLA:
+//   http-functions.js NO tiene ~5 min de timeout. Es FALSO y esa suposición
+//   costó un ciclo entero de desarrollo en CATHOVIA. Wix corta la CONEXIÓN
+//   al cliente a los ~14s aquí IGUAL que en cualquier webMethod.
+//
+//   LO QUE SÍ ESTÁ MEDIDO (Site Monitoring):
+//     · El código backend NO se cancela a los 14s: un stream de prueba llegó
+//       a 29.077ms sin que el runtime lo matara.
+//     · Cuando askAkiraCore tarda más de 14s, el cliente recibe 504 PERO el
+//       backend termina y guarda la respuesta en AkiraMessages.
+//     · El custom element hace polling (cada 3s / 60s) y la recupera. El
+//       usuario ve "Analizando…" y luego la respuesta. No nota el corte.
+//
+//   STREAMING SSE ES IMPOSIBLE EN VELO. Medido: wix-http-functions no acepta
+//   streams (ni ReadableStream web ni stream.Readable de Node). El helper
+//   ok() serializa con JSON.stringify y cierra. NO REINTENTAR.
+//
+// SEGURIDAD:
+//   Los http-functions son PÚBLICOS: NO heredan los permisos de página de
+//   Wix Members que protegen la página de AKIRA. Quien conozca la URL puede
+//   llamarla y consumir tokens de Anthropic. AKIRA Consultor es SOLO LECTURA
+//   y nunca escribe agenda → el riesgo es coste, no integridad.
+//   (Mismo modelo que ya tienen descargarExcel y descargarPdf, que exponen
+//   PaymentReservations sin autenticar.)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function post_akiraAsk(request) {
+    try {
+        const body = await request.body.json();
+        const { sessionId, query, userId, userName, modo } = body || {};
+
+        if (!query) {
+            return badRequest({
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ok: false, error: 'query requerida' })
+            });
+        }
+
+        const result = await askAkiraCore({ sessionId, query, userId, userName, modo });
+
+        return ok({
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(result)
+        });
+
+    } catch (error) {
+        console.error(TAG_AKIRA, 'post_akiraAsk EXCEPTION:', error.message);
+        return serverError({
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ok: false, error: error.message || 'error interno' })
+        });
+    }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AKIRA — Voz (POST)               ◄── NUEVO v1.3.0
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /_functions/akiraTts
+// Body:      { texto }
+// Respuesta: { ok, audioContent (MP3 base64), mimeType, voice, timeMs, error? }
+//
+// El custom element llama aquí por fetch, NO vía Page Code. Motivo: el audio
+// viaja en base64 y setAttribute TRUNCA payloads grandes. Patrón literal de
+// CATHOVIA (post_egaelTts).
+//
+// La VOZ no se pasa por parámetro: sale de SalonConfig (voiceId/voiceRate/
+// voicePitch). Cero hardcoding.
+//
+// ⚠️ Sufre el techo de 14s igual que todo lo demás. MEDIDO en CATHOVIA: P95
+// 16.954ms, 5,9% de error. Y el audio NO se recupera por polling — no se
+// guarda en ninguna colección. En respuestas largas fallará.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function post_akiraTts(request) {
+    try {
+        const body = await request.body.json();
+        const { texto, voiceName, speakingRate, pitch } = body || {};
+
+        if (!texto) {
+            return badRequest({
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ok: false, error: 'texto requerido' })
+            });
+        }
+
+        const result = await akiraSynthesizeCore({ texto, voiceName, speakingRate, pitch });
+
+        return ok({
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(result)
+        });
+
+    } catch (error) {
+        console.error(TAG_AKIRA, 'post_akiraTts EXCEPTION:', error.message);
+        return serverError({
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ok: false, error: error.message || 'error interno' })
+        });
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WHATSAPP WEBHOOK — Verificación (GET)
@@ -242,6 +378,13 @@ async function _procesarMensajeEntrante(data) {
     //
     // → AKIRA responde usando enviarMensajeTexto / enviarMensajeBotones
     // ────────────────────────────────────────────
+    //
+    // NOTA v1.2.0: cuando llegue AKIRA Recepción (el plano operativo que
+    // atiende a clientas por WhatsApp), el destino natural de este placeholder
+    // es askAkiraCore({ query: userMessage, modo: 'recepcion' }) — ya
+    // importado arriba. NO es AKIRA Consultor: Consultor es solo lectura y
+    // para la propiedad del salón, no para clientas. Requiere antes decidir
+    // el alignment del modo 'recepcion' y su identificación por teléfono.
 
     console.log(TAG_WA, `Mensaje enrutado OK — pendiente conexión AKIRA`);
 }
@@ -502,4 +645,51 @@ export async function get_descargarPdf(request) {
     console.error('[HTTP] Error PDF:', error);
     return serverError({ body: error.message });
   }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET: Dump Reservas V1 — one-shot para migración V1→V2 (Hair-Times julio 2026)
+// URL: https://www.hair-times.com/_functions/dumpReservasV1?desdeISO=...&hastaISO=...
+// Devuelve JSON descargable con TODOS los items crudos de queryExtendedBookings
+// del rango, para poder leer duraciones REALES históricas (start/end del session)
+// como fuente de generación de bloqueos en KamisuiteReservations.
+//
+// Este bloque se ELIMINA tras cerrar la migración, junto con el archivo
+// backend/dumpReservasV1.web.js.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export async function get_dumpReservasV1(request) {
+    try {
+        const desdeISO = request.query.desdeISO || null;
+        const hastaISO = request.query.hastaISO || null;
+
+        if (!desdeISO || !hastaISO) {
+            return badRequest({ body: 'Faltan parámetros desdeISO / hastaISO' });
+        }
+
+        // Import dinámico (mismo patrón que _buscarContactoPorTelefono usa con
+        // recepcionLogic.web.js — evita dependencia circular en carga del módulo)
+        const { dumpReservasV1 } = await import('backend/dumpReservasV1.web.js');
+        const result = await dumpReservasV1({ desdeISO, hastaISO });
+
+        if (!result || !result.ok) {
+            return serverError({ body: result?.error || 'Error desconocido en dumpReservasV1' });
+        }
+
+        const json = JSON.stringify(result.items || []);
+        const nombreArchivo = `reservas_v1_${desdeISO.slice(0, 10)}_${hastaISO.slice(0, 10)}.json`;
+
+        return ok({
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Disposition': `attachment; filename="${nombreArchivo}"`
+            },
+            body: json
+        });
+
+    } catch (error) {
+        console.error('[HTTP] Error dumpReservasV1:', error);
+        return serverError({ body: error.message });
+    }
 }

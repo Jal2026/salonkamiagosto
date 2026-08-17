@@ -1,10 +1,39 @@
 // =====================================================
 // KAMISUITE - Page Code Ficha Cliente CRM
 // =====================================================
-// VERSION: 1.9.0
-// FECHA: 16 de junio de 2026
+// VERSION: 1.9.2
+// FECHA: 6 de julio de 2026
 //
 // CHANGELOG:
+// v1.9.2 (06-Jul-2026) — Alta de contactos desde el CRM
+//   - NEW: case 'crearContacto' → crearContactoCRM (nuevo webMethod
+//     del backend v1.9.10). Payload {nombre, apellido, telefono, email,
+//     fechaNacimiento?, sexo?, allowDuplicates?}. En éxito:
+//       1) push del cliente al cache (cachedClientes) para que aparezca
+//          inmediatamente en las búsquedas locales.
+//       2) sendToWidget('contactoCreado', {contactId, cliente}) —
+//          el widget cierra el modal y muestra toast.
+//       3) cargarDatosCliente(contactId) — abre automáticamente la
+//          ficha del recién creado, mismo flujo que 'clienteSeleccionado'.
+//     En duplicado (DUPLICATE_EMAIL): sendToWidget('contactoDuplicadoEmail',
+//     {message}). El widget muestra aviso al operador y reintenta con
+//     allowDuplicates=true si el usuario confirma.
+//     En error genérico: sendToWidget('fichaError', {message}).
+//   - Import ampliado: se añade `crearContactoCRM` al import existente
+//     de backend/fichaClienteLogic.web (misma línea).
+//   - Sin cambios en el resto del switch, imports ni helpers.
+//
+// v1.9.1 (01-Jul-2026) — Fecha de nacimiento (campo nativo Wix)
+//   - NEW: case 'guardarFechaNacimiento' → actualizarContactoCRM
+//     con { contactId, fechaNacimiento }. El backend v1.9.8 la
+//     escribe como contact.info.birthdate (NATIVO Wix Contacts,
+//     no extendedFields). Payload: valor = 'YYYY-MM-DD' o '' para
+//     limpiar. Mismo patrón que guardarUltimaVisita.
+//   - El case 'toggleClubKalonice' se mantiene por compatibilidad
+//     hacia atrás pero el widget v1.7.2 ya no lo dispara.
+//   - Todo lo demás (foto, cupones, campos personalizados,
+//     clasificación demográfica, próximas citas) INTACTO.
+//
 // v1.9.0 (16-Jun-2026) — Evolución del CRM Agenda de Contactos
 //   - FIX: case 'subirFoto' (antes mal nombrado 'actualizarFoto', no
 //     se ejecutaba porque el widget envía 'subirFoto'). Llama al
@@ -63,7 +92,8 @@ import {
   actualizarFotoCliente,
   sincronizarClientProfile,
   enviarMensajeInbox,
-  getProximasCitasCliente
+  getProximasCitasCliente,
+  crearContactoCRM  // v1.9.2
 } from 'backend/fichaClienteLogic.web';
 
 import { cargarTodosContactos } from 'backend/recepcionLogic.web';
@@ -90,7 +120,7 @@ import {
   eliminarCupon
 } from 'backend/couponsLogic.web';
 
-const TAG = '[FichaCliente][PageCode][1.9.0]';
+const TAG = '[FichaCliente][PageCode][1.9.2]';
 
 let cachedClientes = [];
 let widgetReady    = false;
@@ -204,6 +234,40 @@ async function handleMessage(event) {
           sendToWidget('fichaContactData', { cliente: r.cliente, profile: null, warnings: [] });
         } else {
           sendToWidget('fichaError', { message: r?.error?.message || 'Error.' });
+        }
+      } catch (e) {
+        sendToWidget('fichaError', { message: e.message });
+      }
+      break;
+
+    // v1.9.2 — Alta de nuevo contacto desde el CRM.
+    // Payload: {nombre, apellido, telefono, email, fechaNacimiento?,
+    //           sexo?, allowDuplicates?}
+    case 'crearContacto':
+      try {
+        const r = await crearContactoCRM(data);
+        if (r?.ok) {
+          // 1) Cache local para búsquedas inmediatas (mismo shape que
+          //    cargarTodosContactos).
+          if (r.cliente) cachedClientes.push(r.cliente);
+          // 2) Notificar al widget para cierre de modal + toast.
+          sendToWidget('contactoCreado', {
+            contactId: r.contactId,
+            cliente: r.cliente
+          });
+          // 3) Abrir automáticamente la ficha del recién creado
+          //    (mismo flujo que clienteSeleccionado).
+          await cargarDatosCliente(r.contactId);
+        } else if (r?.error?.code === 'DUPLICATE_EMAIL') {
+          // El widget mostrará aviso y podrá reintentar con
+          // allowDuplicates:true si el operador confirma.
+          sendToWidget('contactoDuplicadoEmail', {
+            message: r.error.message || 'Ya existe un contacto con este email.'
+          });
+        } else {
+          sendToWidget('fichaError', {
+            message: r?.error?.message || 'No se pudo crear el contacto.'
+          });
         }
       } catch (e) {
         sendToWidget('fichaError', { message: e.message });
@@ -343,6 +407,22 @@ async function handleMessage(event) {
           ultimaVisita: data.valor || ''
         });
         if (r?.ok) sendToWidget('fichaOk', { message: 'Última visita guardada.' });
+        else sendToWidget('fichaError', { message: r?.error?.message || 'Error.' });
+      } catch (e) {
+        sendToWidget('fichaError', { message: e.message });
+      }
+      break;
+
+    // v1.9.1 — Fecha de nacimiento (campo NATIVO Wix Contacts).
+    // Firma del payload: { contactId, valor: 'YYYY-MM-DD' o '' }.
+    // El backend v1.9.8 la escribe como contact.info.birthdate.
+    case 'guardarFechaNacimiento':
+      try {
+        const r = await actualizarContactoCRM({
+          contactId: data.contactId,
+          fechaNacimiento: data.valor || ''
+        });
+        if (r?.ok) sendToWidget('fichaOk', { message: 'Fecha de nacimiento guardada.' });
         else sendToWidget('fichaError', { message: r?.error?.message || 'Error.' });
       } catch (e) {
         sendToWidget('fichaError', { message: e.message });
@@ -553,6 +633,8 @@ $w.onReady(async () => {
   console.log(`${TAG} onReady`);
   $w('#htmlFichaCliente').onMessage(handleMessage);
 
+  // v1.8.0: Botón clasificación demográfica
+  $w('#clasificasexo').onClick(() => lanzarClasificacionSexo());
+
   await cargarCache();
 });
-

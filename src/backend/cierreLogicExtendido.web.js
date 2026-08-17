@@ -1,6 +1,217 @@
 // =====================================================
-// BACKEND cierreLogicExtendido.web.js — KAMISUITE v1.1.4
+// BACKEND cierreLogicExtendido.web.js — KAMISUITE v1.2.1
 // =====================================================
+// v1.2.1 (12 ago 2026): EL COBRO DE LAS CITAS EXTERNAS SÍ SE SABE.
+//      Una cita de profesional externo cobrada aparecía en Rendimiento
+//      Productivo con `metodoPago` VACÍO, como si no constara con qué
+//      se había cobrado. No era cierto: el operador había pulsado su
+//      botón y el dato estaba guardado.
+//
+//      CAUSA. marcarPagadoReserva (recepcionProLogic, rama esExterno)
+//      escribe el cobro en PagoreservasExternos con bookingId
+//      'EXT_<reservaId>', NO en PaymentReservations. La Q2.5 que cruza
+//      pagos con las reservas del día solo buscaba el prefijo 'KRI_',
+//      así que nunca encontraba el cobro externo y dejaba el método en
+//      blanco. El dato existía; no se iba a buscar.
+//
+//      ARREGLO. Q2.6 nueva: mismo patrón de lotes que Q2.5 sobre
+//      PagoreservasExternos con prefijo 'EXT_'. procesarRendimiento
+//      recibe ese mapa y lo usa SOLO para resolver el método de cobro
+//      cuando no lo ha encontrado por la vía interna.
+//
+//      ALCANCE DELIBERADAMENTE MÍNIMO. El importe de la cita NO cambia:
+//      se sigue calculando desde serviciosDetail exactamente igual que
+//      antes. Solo se rellena un campo que estaba vacío por un fallo de
+//      búsqueda.
+//
+//      ADEMÁS, `clientesLista` incorpora `esExterno` (de
+//      StaffConfig.isExternal, ya disponible en el bucle) para que el
+//      widget pueda etiquetar esos cobros como EXTERNO: es dinero que
+//      pasa por el calendario del salón pero que el salón no ingresa.
+//
+//      NO se toca: procesarCierre, procesarReconciliación, el
+//      Observatorio semanal, el IVA, ni ninguna cifra existente.
+//
+// v1.2.0 (12 ago 2026): REPARTO POR CANAL FÍSICO DE COBRO.
+//      Se elimina la cesta "Otros" del Observatorio semanal y la cesta
+//      "Mixto" del Cierre Financiero. Ambas eran cajones de sastre en
+//      pantallas cuya única función es CUADRAR.
+//
+//      QUÉ ESTABA MAL
+//        · procesarCierre agrupaba por `tipoPago` en crudo sumando el
+//          importeTotal entero. Resultado: la línea "Tarjeta" contenía
+//          SOLO los cobros 100% tarjeta; la parte tarjeta de un cobro
+//          Mixto no estaba en ninguna parte, y el mixto entero aparecía
+//          como una cuarta cesta imposible de contrastar contra el
+//          datáfono.
+//        · _cesta() del Observatorio semanal mandaba a 'otros' todo lo
+//          que no fuese exactamente Tarjeta/Efectivo/Bizum: el importe
+//          ÍNTEGRO de cada Mixto, los Canjes y cualquier tipoPago vacío.
+//          Un mixto de 60€ (40 tarjeta + 20 efectivo) sumaba 60€ a
+//          "Otros" y 0€ a Tarjeta y a Efectivo.
+//        · Daño colateral: los semáforos estadoTarjeta/estadoEfectivo/
+//          estadoBizum contrastaban el arqueo contra cifras a las que
+//          les faltaba la parte mixta → el Observatorio contradecía al
+//          Arqueo de Caja de forma sistemática siempre que hubiese un
+//          cobro mixto en el día.
+//
+//      QUÉ HACE AHORA
+//        · Nuevo helper _repartirCanales(pago): parte cada cobro en los
+//          tres ÚNICOS canales contrastables contra algo físico —
+//          TARJETA (liquidación del datáfono), EFECTIVO (cajón/arqueo)
+//          y BIZUM (extracto). No existe cesta "otros".
+//        · Los cobros Mixto se reparten leyendo `desglosemetodopago`.
+//          El patrón de lectura está copiado LITERALMENTE de
+//          cashRegisterLogic.web.js → calcularEfectivoEsperado, que es
+//          el único punto del proyecto que ya lo hacía bien y lleva
+//          meses en producción.
+//        · Canje NO es dinero: el ingreso entró el día que se compró el
+//          bono. Sale de la fila de importes y se reporta solo como
+//          recuento (`canjes`).
+//        · Lo que no se puede repartir sin inventar NO se reparte y NO
+//          se esconde: genera una ANOMALÍA con etiqueta propia y
+//          visible ("⚠️ Mixto sin desglose", "⚠️ Mixto descuadrado",
+//          "⚠️ Canje con importe", "⚠️ <tipoPago crudo>"). Es un aviso
+//          para corregir en el Editor de Cobros, no una categoría.
+//
+//      INVARIANTE GARANTIZADA
+//        suma(porMetodo) === totalReal. Se expone `porMetodoCuadra`
+//        para poder auditarlo desde fuera. Ningún euro se pierde.
+//
+//      COMPATIBILIDAD CON EL WIDGET ACTUAL (sin tocar el widget)
+//        obtenerObservatorioSemanal sigue devolviendo la clave `otros`
+//        (por día y en totales), pero ahora vale EXACTAMENTE el importe
+//        en anomalías. En un salón sin anomalías vale 0 y el widget,
+//        que solo pinta esa línea con `if (dia.otros > 0)`, deja de
+//        mostrarla por sí solo. Cuando aparezca, significará algo real
+//        y accionable. Claves nuevas añadidas (`anomalia`,
+//        `anomaliasDetalle`, `canjes`) que el widget actual ignora.
+//
+//      NO SE TOCA: procesarRendimiento, procesarReconciliacion, IVA,
+//      propinas, productos, staff, externos, descuentos, especiales,
+//      arqueo, ni la firma de ningún export.
+//
+// v1.1.9 (5 ago 2026): "Servicios del día" muestra el PRECIO DE TARIFA.
+//      Cada línea salía con el neto prorrateado (precio × factor
+//      neto/bruto del pago), de modo que un ajuste en el cobro o un
+//      descuento repartía céntimos entre todos los servicios y se leían
+//      cosas como "Puntos de Luz 46,77€" cuando en la ficha de la cita
+//      pone 57€. Aritméticamente correcto, ilegible en la práctica: ese
+//      bloque es el catálogo de lo que se ha hecho, no el desglose de lo
+//      que ha entrado.
+//      Ahora cada servicio se lista a su precio real (precio × cantidad).
+//      Dónde vive cada cifra a partir de aquí:
+//        · Servicios del día      → tarifa, lo que se ha trabajado.
+//        · Clientes del día       → neto cobrado por cita (el ticket).
+//        · Productividad por staff→ neto cobrado (el dinero).
+//      Por eso el total de un profesional en Servicios puede ser mayor
+//      que en Productividad cuando ha habido descuento o ajuste: la
+//      diferencia es justo lo que no se cobró.
+//
+// v1.1.8 (5 ago 2026): COBROS DE OTROS DÍAS + OBSERVATORIO SEMANAL.
+//
+//   A) `reconciliacion.cobrosDeOtrosDias` se enriquece con hora, método,
+//      quién cobró y la FECHA DE LA CITA a la que corresponde el cobro
+//      (una query por lote sobre las reservas referenciadas). Sin eso el
+//      bloque decía que había un descuadre pero no de qué cita venía.
+//
+//   B) NEW `obtenerObservatorioSemanal({ fechaISO })` — semana natural
+//      lunes→domingo que contiene esa fecha. Por cada día: cobrado en
+//      tarjeta, efectivo, bizum, otros y total, más el estado de cuadre
+//      de los tres métodos:
+//        · EFECTIVO  → cuadra si el CashRegister de ese día existe, está
+//          arqueado (status 'saved' o 'closed') y su `difference` es 0.
+//        · TARJETA   → cuadra si `cardConfirmed` es true (alguien ha
+//          confirmado que la lectura del datáfono coincide).
+//        · BIZUM     → cuadra si `bizumConfirmed` es true.
+//      Un método sin cobros ese día no se marca pendiente: no hay nada
+//      que cuadrar. Los días futuros tampoco.
+//      Requiere los campos `cardConfirmed` y `bizumConfirmed` (Booleano)
+//      en CashRegister, que escribe cashRegisterLogic v1.1.4.
+//
+// v1.1.7 (5 ago 2026): "COBRADO POR STAFF" PASA A SER "QUIÉN COBRÓ".
+//      Ese bloque agrupaba por `PaymentReservations.staff`, que guarda el
+//      TITULAR de la cita — la columna del calendario —, no la persona que
+//      pasó el cobro. Con el salón trabajando sin capa de acceso el reparto
+//      era directamente ficticio: repartía entre las tres profesionales
+//      cobros que nadie identificado hizo.
+//      Ahora agrupa por `soldBy` (empleado logueado, lo graban
+//      recepcionProLogic v1.0.48 para los cobros de cita y tiendaProductos
+//      v1.5.13 para los productos). Vacío → cajón único "Administrador",
+//      que es exactamente lo que corresponde a un día sin login y a todo
+//      el histórico anterior a este cambio.
+//      · `staff` sigue intacto en el CMS y se sigue usando para lo que sí
+//        es: detectar externos y su comisión, y las ventas de ESPECIALES.
+//      · Ningún cobro queda fuera del bloque: se elimina la exclusión de
+//        TIENDA_POS, que dejaba ventas de la tienda standalone sin sumar en
+//        el agregado aunque sí contaran en el total del día.
+//      · rendimiento.clientes[].cobradoPor — quién cobró esa cita.
+//      · rendimiento.serviciosPorStaff[].servicios[].hora — hora de la
+//        fase en el calendario, para localizar el servicio de un vistazo.
+//
+// v1.1.6 (5 ago 2026): ATRIBUCIÓN POR FASE + DETALLE DE VENTAS.
+//
+//   A) EL INFORME MENTÍA SOBRE QUIÉN TRABAJA. Hasta v1.1.5,
+//      procesarRendimiento agrupaba por `reserva.staffName`, el titular
+//      del pack. Pero en KAMISUITE cada FASE lleva su propio `staffId`:
+//      arrastrar una fase a otra columna la reasigna. El calendario
+//      pinta por fase; el informe contaba por titular. Resultado real
+//      del 5-ago-2026: Verónica salía con 2 citas cuando su columna
+//      tenía 4 clientas (dos fases suyas vivían en packs titulados a
+//      nombre de Alejandra y de Erica), y a la vez se le imputaban tres
+//      fases de Mery Perona que ejecutó Alejandra.
+//      Cambio: la unidad de atribución pasa a ser la LÍNEA de servicio.
+//      Cada línea de `serviciosDetail` se cruza con su fase ocupante del
+//      mismo label (alineando por número de ocurrencia, igual que hacen
+//      quitarItemReserva y setLineWeight en recepcionProLogic) y su
+//      importe se imputa al `staffId` de esa fase, resuelto contra
+//      StaffConfig.wixResourceId. Sin fase propia → titular del pack.
+//      Los importes se escalan por el factor neto/bruto del pago, de
+//      modo que la suma por staff sigue cuadrando al céntimo con lo
+//      cobrado, descuentos incluidos.
+//
+//   B) PRODUCTO Y SERVICIO DEJAN DE MEZCLARSE. El total de la línea de
+//      cliente ya no arrastra los productos vendidos: `total` es solo
+//      servicios + extras, y los productos salen en su propio detalle
+//      con cliente, concepto e importe.
+//
+//   C) NUEVO EN EL RETURN (aditivo; nada existente cambia de nombre):
+//      · rendimiento.serviciosPorStaff[] — servicios agregados por
+//        profesional.
+//      · rendimiento.clientesPorStaff[]  — clientas por profesional.
+//      · rendimiento.clientes[].metodoPago — método de cobro de la cita.
+//      · rendimiento.clientes[].staffs[]   — profesionales que la
+//        atendieron (una cita repartida sale en las dos columnas).
+//      · rendimiento.pendientes[] — servicios sin cobrar del día, con
+//        cliente, servicio y staff, para el bloque del cierre.
+//      · cierre.productosDetalle[] — una entrada por producto vendido
+//        con cliente, importe, método y `soldBy` (empleado logueado que
+//        despachó; vacío → el widget pinta "Administrador").
+//      · cierre.especiales[].hora.
+//
+// v1.1.5 (4 ago 2026): DETALLE DE ESPECIALES en el Cierre Financiero.
+//      Las ventas manuales de productos comerciales (Bono 🎟️, Tarjeta
+//      PRIME ⭐, Tarjeta promocional 🎁) hechas desde Recepción PRO se
+//      registran en PaymentReservations con staff='ESPECIALES'
+//      (especialesVentaLogic v1.0.1 · registrarCobroEspecial). Hasta
+//      ahora entraban en TOTAL COBRADO REAL, en "Cobrado por método de
+//      pago", en el desglose de IVA y como una línea agregada
+//      "ESPECIALES · N cobros" en "Cobrado por staff", pero NO se veía
+//      QUÉ se había vendido ni A QUIÉN: la sección "Productos cobrados
+//      hoy" se construye con parsearProductos, que solo reconoce tokens
+//      con prefijo 🛒, y los especiales usan 🎟️ / ⭐ / 🎁.
+//      Cambio: procesarCierre acumula además `especiales[]` (una entrada
+//      por cada fila de pago con staff='ESPECIALES') con cliente,
+//      concepto (la descripcion tal cual la escribió la venta), importe
+//      y método de pago, más `especialesTotal`.
+//      NO se altera ningún cálculo previo: el importe ya sumaba en
+//      totalReal, porMetodo, IVA y staffAgg y sigue sumando exactamente
+//      igual. La línea "ESPECIALES" de "Cobrado por staff" se mantiene
+//      (solo TIENDA_POS está excluida de ese agregado) para que el
+//      bloque siga cuadrando con el total.
+//      Aditivo puro: dos campos nuevos en el return de procesarCierre.
+//      Un widget antiguo que no los lea sigue funcionando igual.
+//
 // v1.1.4 (14 jun 2026): FILTRADO DE BLOQUEOS del informe del día.
 //      Los bloqueos manuales del calendario (family='BLOQUEO' /
 //      clientName con prefijo 'BLOQUEO:Almuerzo', etc.) creados por el
@@ -74,11 +285,17 @@
 import { Permissions, webMethod } from 'wix-web-module';
 import wixData from 'wix-data';
 
-const TAG = '[CierreExt v1.1.4]';
+const TAG = '[CierreExt v1.2.1]';
 const COLECCION_PAGOS    = 'PaymentReservations';
 const COLECCION_RESERVAS = 'KamisuiteReservations';
+const COLECCION_PAGOS_EXT = 'PagoreservasExternos';   // v1.2.1 - ledger de externos
 const COLECCION_STAFF    = 'StaffConfig';
 const COLECCION_CONFIG   = 'SalonConfig';
+
+// v1.1.5 — Etiqueta de staff que escribe especialesVentaLogic en
+// PaymentReservations.staff para las ventas manuales de Bono / PRIME /
+// Tarjeta promocional. Debe coincidir con STAFF_ESPECIALES de ese backend.
+const STAFF_ESPECIALES = 'ESPECIALES';
 
 // =====================================================
 // HELPERS COMUNES
@@ -238,17 +455,95 @@ function horaMadrid(d) {
   return dd.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Europe/Madrid' });
 }
 
+// v1.1.6 — Desenvuelve un campo JSON del CMS que puede llegar como objeto
+// {items:[...]}, como string JSON o como array pelado. Mismo criterio que
+// jsonIn de recepcionProLogic.
+function itemsDe(v, key) {
+  if (!v) return [];
+  let o = v;
+  if (typeof o === 'string') {
+    try { o = JSON.parse(o); } catch (_) { return []; }
+  }
+  if (Array.isArray(o)) return o;
+  if (o && Array.isArray(o[key])) return o[key];
+  return [];
+}
+
+// v1.1.6 — Reparte las líneas de servicio de una reserva entre las
+// profesionales que las ejecutaron.
+//
+// El calendario asigna staff POR FASE. Una línea de `serviciosDetail` se
+// corresponde con la fase ocupante `tipo:'servicio'` que lleva el mismo
+// label; cuando el mismo servicio aparece dos veces en la cita, se alinean
+// por número de ocurrencia. De esa fase sale el `staffId`, que se resuelve
+// contra StaffConfig.wixResourceId. Si la fase no lleva staffId propio (lo
+// normal cuando nadie la ha movido de columna), manda el titular del pack.
+//
+// Devuelve un Map staffName → { servicios:[{nombre,cantidad,precio}], bruto }.
+function repartirLineasPorStaff(reserva, servicios, staffPorResourceId) {
+  const titular = String(reserva.staffName || 'Sin staff').trim() || 'Sin staff';
+  const fasesSvc = itemsDe(reserva.fases, 'items').filter(f => f && f.tipo === 'servicio');
+  const vistas = {};
+  const out = new Map();
+
+  for (const sv of servicios) {
+    const lab = String(sv.nombre || '').trim();
+    const occ = vistas[lab] || 0;
+    vistas[lab] = occ + 1;
+
+    let quien = titular;
+    let inicio = null;          // v1.1.7 — hora de la fase en el calendario
+    if (lab) {
+      let seen = 0;
+      for (const f of fasesSvc) {
+        if (String(f.label || '').trim() !== lab) continue;
+        if (seen === occ) {
+          const sid = String(f.staffId || '').trim();
+          if (sid && staffPorResourceId[sid]) quien = staffPorResourceId[sid];
+          if (f.start) inicio = f.start;
+          break;
+        }
+        seen++;
+      }
+    }
+    if (!inicio) inicio = reserva.fechaReserva || null;
+
+    if (!out.has(quien)) out.set(quien, { servicios: [], bruto: 0 });
+    const bucket = out.get(quien);
+    bucket.servicios.push({
+      nombre: sv.nombre,
+      cantidad: sv.cantidad,
+      precio: sv.precio,
+      hora: horaMadrid(inicio),
+      fechaMs: inicio ? new Date(inicio).getTime() : 0
+    });
+    bucket.bruto = Math.round((bucket.bruto + sv.precio * sv.cantidad) * 100) / 100;
+  }
+
+  // Cita sin líneas parseables (todo a 0€, solo extras, etc.): el titular
+  // sigue siendo responsable de la clienta y debe aparecer en su columna.
+  if (!out.size) out.set(titular, { servicios: [], bruto: 0 });
+  return out;
+}
+
 // =====================================================
 // Q1 — RENDIMIENTO PRODUCTIVO
 // =====================================================
-function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
+function procesarRendimiento(reservas, staffList, pagosPorReserva = {}, pagosExtPorReserva = {}) {
   const staffMap = {};
+  // v1.1.6 — wixResourceId → nombre. Es el identificador que guardan las
+  // fases en `staffId` (recepcionProLogic resuelve el nombre por este mismo
+  // campo desde v1.0.0).
+  const staffPorResourceId = {};
   for (const s of staffList) {
-    const key = (s.displayName || s.canonicalName || '').toUpperCase();
+    const nombre = (s.displayName || s.canonicalName || '').trim();
+    const key = nombre.toUpperCase();
     if (key) staffMap[key] = {
       isExternal: !!s.isExternal,
       commissionPct: Number(s.commissionPercentage) || 0
     };
+    const rid = String(s.wixResourceId || '').trim();
+    if (rid && nombre) staffPorResourceId[rid] = nombre;
   }
 
   let cobrado = 0, pendiente = 0;
@@ -260,6 +555,10 @@ function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
   const productosAgg = new Map();
   const externosArr = [];
   const clientesLista = [];
+  // v1.1.6 — vistas por profesional (atribución por fase)
+  const svcPorStaff = new Map();      // staffName → Map(nombre → agg)
+  const cliPorStaff = new Map();      // staffName → array de clientas
+  const pendientesArr = [];           // servicios sin cobrar del día
 
   for (const r of reservas) {
     const isPagado = r.status === 'PAGADO';
@@ -272,22 +571,58 @@ function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
     const staffKey = staffName.toUpperCase();
     const staffInfo = staffMap[staffKey] || { isExternal: false, commissionPct: 0 };
 
+    const parsed = parsearServiciosDetail(r.serviciosDetail || '');
+
     // v1.1.1: si pagada y hay pago asociado, usar importeTotal del pago (NETO con descuento aplicado)
-    let importe = bruto;
+    let netoPago = null;
     let descInfo = null;
+    let metodoPago = '';
+    let cobradoPor = '';        // v1.1.7
     if (isPagado) {
       const pago = pagosPorReserva[r._id];
       if (pago) {
         const neto = Number(pago.importeTotal);
-        if (!isNaN(neto) && neto >= 0) importe = neto;
+        if (!isNaN(neto) && neto >= 0) netoPago = neto;
         descInfo = parsearDescuentoEnDescripcion(pago.descripcion);
+        metodoPago = String(pago.tipoPago || '').trim();   // v1.1.6
+        cobradoPor = String(pago.soldBy || '').trim();     // v1.1.7 — quién cobró
+      }
+
+      // v1.2.1 — CITAS DE PROFESIONAL EXTERNO.
+      // Su cobro NO vive en PaymentReservations: marcarPagadoReserva lo
+      // manda a PagoreservasExternos con bookingId 'EXT_<reservaId>'
+      // (rama esExterno). Como Q2.5 solo miraba el prefijo 'KRI_', estas
+      // citas llegaban aquí con metodoPago vacío aunque el operador SÍ
+      // hubiese pulsado un botón — y el informe las pintaba como
+      // "sin método". El dato existía; simplemente no se iba a buscar.
+      //
+      // Se usa EXCLUSIVAMENTE para resolver el método de cobro. El
+      // cálculo del importe NO se toca: sigue saliendo de serviciosDetail
+      // como hasta ahora, para no mover cifras que nadie ha pedido mover.
+      if (!metodoPago) {
+        const pagoExt = pagosExtPorReserva[r._id];
+        if (pagoExt) metodoPago = String(pagoExt.tipoPago || '').trim();
       }
     }
 
+    // v1.1.6 — Bruto de todo lo facturable de la cita. El factor neto/bruto
+    // reparte el descuento proporcionalmente entre las líneas, de modo que
+    // la suma por profesional cuadra al céntimo con lo cobrado.
+    const brutoSvc    = parsed.servicios.reduce((acc, sv) => acc + sv.precio * sv.cantidad, 0);
+    const brutoExtras = parsed.extras.reduce((acc, e) => acc + e.importe, 0);
+    const brutoProd   = parsed.productos.reduce((acc, pr) => acc + pr.subtotal, 0);
+    const brutoLineas = brutoSvc + brutoExtras + brutoProd;
+    const factor = (netoPago !== null && brutoLineas > 0) ? (netoPago / brutoLineas) : 1;
+
+    // v1.1.6 — El importe de la CITA es servicios + extras. Los productos
+    // NO entran: van a su propio detalle. Antes se sumaban aquí y el
+    // informe mostraba un total del que no se sabía a qué correspondía.
+    const importe = (netoPago !== null && brutoLineas > 0)
+      ? Math.round((brutoSvc + brutoExtras) * factor * 100) / 100
+      : Math.round(((brutoSvc + brutoExtras) || bruto) * 100) / 100;
+
     if (isPagado) { cobrado += importe; clientesCobrados.add(claveCli); }
     else          { pendiente += importe; clientesPendientes.add(claveCli); }
-
-    const parsed = parsearServiciosDetail(r.serviciosDetail || '');
 
     for (const sv of parsed.servicios) {
       if (!serviciosAgg.has(sv.nombre)) serviciosAgg.set(sv.nombre, { nombre: sv.nombre, cantidad: 0, total: 0 });
@@ -312,12 +647,68 @@ function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
       });
     }
 
-    if (!staffAgg.has(staffName)) staffAgg.set(staffName, { staffName, cobrado: 0, pendiente: 0, total: 0, citas: 0, isExternal: staffInfo.isExternal, commissionPct: staffInfo.commissionPct });
-    const stAgg = staffAgg.get(staffName);
-    if (isPagado) stAgg.cobrado += importe;
-    else stAgg.pendiente += importe;
-    stAgg.total += importe;
-    stAgg.citas += 1;
+    // ── v1.1.6 · ATRIBUCIÓN POR FASE ──────────────────────────────────
+    // Cada línea va a quien la ejecutó, no al titular del pack. Los
+    // extras ([EXTRA], importe manual sin fase) se quedan con el titular.
+    const reparto = repartirLineasPorStaff(r, parsed.servicios, staffPorResourceId);
+    const extrasNeto = Math.round(brutoExtras * factor * 100) / 100;
+    const staffsDeLaCita = [];
+
+    for (const [quien, bucket] of reparto.entries()) {
+      const netoR = Math.round((bucket.bruto * factor + (quien === staffName ? extrasNeto : 0)) * 100) / 100;
+      staffsDeLaCita.push(quien);
+
+      const infoQuien = staffMap[quien.toUpperCase()] || { isExternal: false, commissionPct: 0 };
+      if (!staffAgg.has(quien)) staffAgg.set(quien, { staffName: quien, cobrado: 0, pendiente: 0, total: 0, citas: 0, isExternal: infoQuien.isExternal, commissionPct: infoQuien.commissionPct });
+      const stAgg = staffAgg.get(quien);
+      if (isPagado) stAgg.cobrado += netoR;
+      else stAgg.pendiente += netoR;
+      stAgg.total += netoR;
+      stAgg.citas += 1;
+
+      // v1.1.7 — Los servicios ya no se agregan por nombre dentro de cada
+      // profesional: se listan uno por uno con la HORA de su fase, que es
+      // lo que permite localizarlo en el calendario. Agregar borraba
+      // justamente ese dato.
+      if (!svcPorStaff.has(quien)) svcPorStaff.set(quien, []);
+      const listaSvc = svcPorStaff.get(quien);
+      for (const sv of bucket.servicios) {
+        listaSvc.push({
+          hora: sv.hora,
+          fechaMs: sv.fechaMs,
+          nombre: sv.nombre,
+          cliente: (r.clientName || '').trim(),
+          cantidad: sv.cantidad,
+          // v1.1.9 — precio de tarifa, SIN prorratear el descuento/ajuste
+          total: Math.round(sv.precio * sv.cantidad * 100) / 100
+        });
+      }
+
+      if (!cliPorStaff.has(quien)) cliPorStaff.set(quien, []);
+      cliPorStaff.get(quien).push({
+        hora: horaMadrid(r.fechaReserva),
+        fechaMs: r.fechaReserva ? new Date(r.fechaReserva).getTime() : 0,
+        nombre: (r.clientName || 'Sin nombre').trim(),
+        servicios: bucket.servicios,
+        total: netoR,
+        status: r.status,
+        metodoPago,
+        cobradoPor,                                      // v1.1.7
+        descLabel: descInfo?.label || '',
+        compartida: reparto.size > 1
+      });
+
+      if (isPendiente) {
+        pendientesArr.push({
+          hora: horaMadrid(r.fechaReserva),
+          fechaMs: r.fechaReserva ? new Date(r.fechaReserva).getTime() : 0,
+          cliente: (r.clientName || 'Sin nombre').trim(),
+          staff: quien,
+          servicios: bucket.servicios.map(sv => sv.nombre).filter(Boolean),
+          importe: netoR
+        });
+      }
+    }
 
     if (staffInfo.isExternal) {
       externosArr.push({
@@ -334,10 +725,14 @@ function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
       fechaMs: r.fechaReserva ? new Date(r.fechaReserva).getTime() : 0,
       nombre: (r.clientName || 'Sin nombre').trim(),
       staff: staffName,
+      staffs: staffsDeLaCita,                          // v1.1.6 — quién la atendió de verdad
       servicios: parsed.servicios,
       total: Math.round(importe * 100) / 100,        // neto si pagado, bruto si pendiente
       bruto: Math.round(bruto * 100) / 100,           // siempre el subtotal sin descuento
       descLabel: descInfo?.label || '',                // "-50%" o "-25€" o ""
+      metodoPago,                                      // v1.1.6
+      cobradoPor,                                      // v1.1.7
+      esExterno: !!staffInfo.isExternal,                // v1.2.1
       status: r.status
     });
   }
@@ -361,9 +756,124 @@ function procesarRendimiento(reservas, staffList, pagosPorReserva = {}) {
     })).sort((a, b) => b.total - a.total),
     productos: Array.from(productosAgg.values()),
     externos: externosArr,
-    externosTotal: round(externosArr.reduce((s, e) => s + e.importe, 0))
+    externosTotal: round(externosArr.reduce((s, e) => s + e.importe, 0)),
+
+    // ── v1.1.6 · VISTAS POR PROFESIONAL (atribución por fase) ──
+    serviciosPorStaff: Array.from(svcPorStaff.entries()).map(([staffName, arr]) => {
+      const servicios = arr.slice().sort((a, b) => a.fechaMs - b.fechaMs);   // v1.1.7 — cronológico
+      return { staffName, servicios, total: round(servicios.reduce((acc, x) => acc + x.total, 0)) };
+    }).sort((a, b) => b.total - a.total),
+
+    clientesPorStaff: Array.from(cliPorStaff.entries()).map(([staffName, arr]) => {
+      const clientes = arr.slice().sort((a, b) => a.fechaMs - b.fechaMs);
+      return { staffName, clientes, total: round(clientes.reduce((acc, x) => acc + x.total, 0)) };
+    }).sort((a, b) => b.total - a.total),
+
+    pendientes: pendientesArr.sort((a, b) => a.fechaMs - b.fechaMs),
+    pendientesTotal: round(pendientesArr.reduce((acc, x) => acc + x.importe, 0))
   };
 }
+
+// =====================================================
+// REPARTO POR CANAL FÍSICO DE COBRO — v1.2.0
+// =====================================================
+// Un cuadre solo admite canales que se puedan contrastar contra algo
+// físico:
+//     TARJETA  → liquidación del datáfono
+//     EFECTIVO → cajón / arqueo de caja
+//     BIZUM    → extracto de la cuenta
+// Todo lo demás no es un canal: o no es dinero (Canje), o es una
+// anomalía que hay que corregir. Por eso esta función NO tiene cesta
+// "otros" ni cesta "Mixto".
+//
+// Universo real de `tipoPago` escrito hoy en PaymentReservations:
+//   'Efectivo' | 'Tarjeta' | 'Bizum' | 'Mixto' | 'Canje' | ''
+// (recepcionProLogic, tiendaProductos, especialesVentaLogic,
+//  externosLogic, servicesPublicSync y testCheckout). Cualquier valor
+// distinto cae en su propia cesta de anomalía etiquetada con el valor
+// crudo — nunca se mezcla con otro.
+//
+// Lectura de `desglosemetodopago`: patrón copiado LITERALMENTE de
+// cashRegisterLogic.web.js → calcularEfectivoEsperado (en producción).
+// Formato canónico emitido por recepcionProCMS_widget._openMixto y por
+// edicionpagoswidget:  '{"Tarjeta":N,"Efectivo":N,"Bizum":N}'
+// (solo las claves > 0).
+//
+// Devuelve SIEMPRE el mismo objeto:
+//   { tarjeta, efectivo, bizum, anomalia, anomaliaLabel, canje }
+// Invariante: tarjeta + efectivo + bizum + anomalia === importeTotal.
+// Único caso con todo a 0: un Canje de 0€ (canje === true).
+function _repartirCanales(p) {
+  const out = { tarjeta: 0, efectivo: 0, bizum: 0, anomalia: 0, anomaliaLabel: '', canje: false };
+
+  const importe = Number(p.importeTotal) || 0;
+  const tipoCrudo = String(p.tipoPago || '').trim();
+  const t = tipoCrudo.toLowerCase();
+
+  if (t === 'tarjeta')  { out.tarjeta  = importe; return out; }
+  if (t === 'efectivo') { out.efectivo = importe; return out; }
+  if (t === 'bizum')    { out.bizum    = importe; return out; }
+
+  // Canje: el dinero entró el día que se compró el bono/tarjeta.
+  // Con importe 0 (caso normal) solo se cuenta. Con importe > 0 es una
+  // incoherencia que hay que ver, no ocultar.
+  if (t === 'canje') {
+    if (Math.abs(importe) < 0.005) { out.canje = true; return out; }
+    out.anomalia = importe;
+    out.anomaliaLabel = '⚠️ Canje con importe';
+    return out;
+  }
+
+  if (t === 'mixto') {
+    let d = null;
+    try {
+      d = p.desglosemetodopago ? JSON.parse(p.desglosemetodopago) : null;
+    } catch (e) {
+      d = null;
+    }
+
+    if (!d || typeof d !== 'object') {
+      // Filas anteriores al 1-ago-2026, cuando paymentReservationsLogic
+      // v1.3.2 añadió la validación cross-field que exige desglose.
+      out.anomalia = importe;
+      out.anomaliaLabel = '⚠️ Mixto sin desglose';
+      return out;
+    }
+
+    const lower = {};
+    for (const k of Object.keys(d)) lower[String(k).trim().toLowerCase()] = Number(d[k]) || 0;
+    const ta = lower.tarjeta  || 0;
+    const ef = lower.efectivo || 0;
+    const bi = lower.bizum    || 0;
+    const suma = ta + ef + bi;
+
+    if (suma <= 0) {
+      out.anomalia = importe;
+      out.anomaliaLabel = '⚠️ Mixto sin desglose';
+      return out;
+    }
+
+    // Si el desglose no cuadra con el importe cobrado, repartirlo sería
+    // inventar. Se marca entero y se deja ver.
+    if (Math.abs(suma - importe) >= 0.01) {
+      out.anomalia = importe;
+      out.anomaliaLabel = '⚠️ Mixto descuadrado';
+      return out;
+    }
+
+    out.tarjeta  = ta;
+    out.efectivo = ef;
+    out.bizum    = bi;
+    return out;
+  }
+
+  out.anomalia = importe;
+  out.anomaliaLabel = '⚠️ ' + (tipoCrudo || 'Sin método');
+  return out;
+}
+
+// Orden fijo de presentación de los canales físicos.
+const CANALES_FISICOS = ['Tarjeta', 'Efectivo', 'Bizum'];
 
 // =====================================================
 // Q2 — CIERRE FINANCIERO
@@ -387,14 +897,36 @@ function procesarCierre(pagos, staffList, vatRate) {
   const externosArr = [];
   const descuentosArr = [];   // v1.1.1
   let descuentoTotal = 0;     // v1.1.1
+  const especialesArr = [];   // v1.1.5
+  let especialesTotal = 0;    // v1.1.5
+  const productosDetalle = [];  // v1.1.6 — una entrada por producto vendido
+  let canjesCount = 0;          // v1.2.0 — canjes de 0€ (no son dinero)
+  const anomaliasArr = [];      // v1.2.0 — cobros que no se pueden repartir
 
   for (const p of noCancelados) {
     const importe = Number(p.importeTotal) || 0;
     totalReal += importe;
     totalPropinas += extraerPropinasDeDescripcion(p.descripcion);
 
-    const metodo = p.tipoPago || 'Sin especificar';
-    porMetodo[metodo] = (porMetodo[metodo] || 0) + importe;
+    // v1.2.0 — reparto por canal físico. La parte tarjeta / efectivo /
+    // bizum de un cobro Mixto suma en su canal correspondiente; ya no
+    // existe la cesta "Mixto".
+    const rep = _repartirCanales(p);
+    if (rep.tarjeta)  porMetodo['Tarjeta']  = (porMetodo['Tarjeta']  || 0) + rep.tarjeta;
+    if (rep.efectivo) porMetodo['Efectivo'] = (porMetodo['Efectivo'] || 0) + rep.efectivo;
+    if (rep.bizum)    porMetodo['Bizum']    = (porMetodo['Bizum']    || 0) + rep.bizum;
+    if (rep.canje)    canjesCount += 1;
+    if (Math.abs(rep.anomalia) >= 0.005) {
+      porMetodo[rep.anomaliaLabel] = (porMetodo[rep.anomaliaLabel] || 0) + rep.anomalia;
+      anomaliasArr.push({
+        cliente: (p.nombreCliente || '').trim(),
+        importe: Math.round(rep.anomalia * 100) / 100,
+        motivo: rep.anomaliaLabel,
+        tipoPago: String(p.tipoPago || ''),
+        descripcion: String(p.descripcion || ''),
+        pagoId: p._id || ''
+      });
+    }
 
     const prods = parsearProductos(p.descripcion);
     for (const prod of prods) {
@@ -402,6 +934,22 @@ function procesarCierre(pagos, staffList, vatRate) {
       const agg = productosAgg.get(prod.nombre);
       agg.cantidad += prod.cantidad;
       agg.total = Math.round((agg.total + prod.subtotal) * 100) / 100;
+
+      // v1.1.6 — Detalle con CLIENTE y VENDEDOR. `soldBy` lo escribe
+      // tiendaProductos v1.5.13 con el empleado logueado en Recepción;
+      // vacío (ventas anteriores o sin capa de acceso) → el widget lo
+      // pinta como "Administrador". No se usa `staff`: ahí vive el
+      // discriminador TIENDA / TIENDA_POS, que no es una persona.
+      productosDetalle.push({
+        cliente: (p.nombreCliente || '').trim(),
+        producto: prod.nombre,
+        cantidad: prod.cantidad,
+        importe: Math.round(prod.subtotal * 100) / 100,
+        metodo: p.tipoPago || '',
+        soldBy: String(p.soldBy || '').trim(),
+        hora: horaMadrid(p.fechaPago),
+        fechaMs: p.fechaPago ? new Date(p.fechaPago).getTime() : 0
+      });
     }
 
     // v1.1.1: descuentos parseados desde la descripcion del pago
@@ -416,13 +964,38 @@ function procesarCierre(pagos, staffList, vatRate) {
     }
 
     const staffName = String(p.staff || 'Sin staff').trim();
-    if (staffName.toUpperCase() !== 'TIENDA_POS') {
-      if (!staffAgg.has(staffName)) staffAgg.set(staffName, { staffName, cobrado: 0, citas: 0, isExternal: false, commissionPct: 0 });
-      const st = staffAgg.get(staffName);
-      st.cobrado += importe;
-      st.citas += 1;
-      const info = staffMap[staffName.toUpperCase()];
-      if (info) { st.isExternal = info.isExternal; st.commissionPct = info.commissionPct; }
+
+    // ── v1.1.7 · QUIÉN COBRÓ ──────────────────────────────────────────
+    // Agrupamos por `soldBy`, el empleado que estaba logueado al pasar el
+    // cobro. `staff` NO sirve para esto: guarda el titular de la cita, o
+    // sea la columna del calendario, y los discriminadores TIENDA /
+    // TIENDA_POS / ESPECIALES, que no son personas.
+    // Sin login (o cobro anterior a v1.0.48) → cajón único Administrador.
+    // Entran TODOS los cobros, incluida la tienda standalone: antes se
+    // excluía TIENDA_POS y el bloque no cuadraba con el total del día.
+    const quienCobro = String(p.soldBy || '').trim() || 'Administrador';
+    if (!staffAgg.has(quienCobro)) staffAgg.set(quienCobro, { staffName: quienCobro, cobrado: 0, citas: 0, isExternal: false, commissionPct: 0 });
+    const st = staffAgg.get(quienCobro);
+    st.cobrado += importe;
+    st.citas += 1;
+    const infoCobro = staffMap[quienCobro.toUpperCase()];
+    if (infoCobro) { st.isExternal = infoCobro.isExternal; st.commissionPct = infoCobro.commissionPct; }
+
+    // v1.1.5 — Detalle de ventas ESPECIALES (Bono / PRIME / Tarjeta).
+    // `concepto` es la descripcion tal cual la grabó registrarCobroEspecial
+    // ("🎟️ Bono · <servicio> (N usos) · N€", "⭐ Tarjeta PRIME · …",
+    // "🎁 Tarjeta · …", con el token de descuento concatenado si lo hubo).
+    // No se reparsea: se muestra literal para no perder ni inventar nada.
+    if (staffName.toUpperCase() === STAFF_ESPECIALES) {
+      especialesArr.push({
+        cliente: (p.nombreCliente || '').trim(),
+        concepto: String(p.descripcion || '').trim(),
+        importe: Math.round(importe * 100) / 100,
+        metodo: p.tipoPago || '',
+        hora: horaMadrid(p.fechaPago),                     // v1.1.6
+        fechaMs: p.fechaPago ? new Date(p.fechaPago).getTime() : 0
+      });
+      especialesTotal += importe;
     }
 
     const info = staffMap[staffName.toUpperCase()];
@@ -444,17 +1017,38 @@ function procesarCierre(pagos, staffList, vatRate) {
   const iva = desglosarIVA(baseConIVA, vatRate);
 
   const round = v => Math.round(v * 100) / 100;
+
+  // v1.2.0 — orden fijo: los tres canales físicos primero, las
+  // anomalías después (nunca se mezclan entre sí).
+  const porMetodoArr = [];
+  for (const c of CANALES_FISICOS) {
+    if (porMetodo[c]) porMetodoArr.push({ metodo: c, importe: round(porMetodo[c]) });
+  }
+  for (const k of Object.keys(porMetodo)) {
+    if (!CANALES_FISICOS.includes(k)) porMetodoArr.push({ metodo: k, importe: round(porMetodo[k]) });
+  }
+  const porMetodoSuma = round(porMetodoArr.reduce((s, m) => s + m.importe, 0));
+
   return {
     totalReal,
     transacciones: noCancelados.length,
-    porMetodo: Object.entries(porMetodo).map(([metodo, importe]) => ({ metodo, importe: round(importe) })),
+    porMetodo: porMetodoArr,
+    porMetodoSuma,                                  // v1.2.0
+    porMetodoCuadra: Math.abs(porMetodoSuma - totalReal) < 0.01,  // v1.2.0
+    canjes: canjesCount,                            // v1.2.0 — recuento, no importe
+    anomaliasCobro: anomaliasArr,                   // v1.2.0
+    anomaliasCobroTotal: round(anomaliasArr.reduce((s, a) => s + a.importe, 0)),  // v1.2.0
     iva: { vatRate, totalCobrado: totalReal, totalPropinas, totalSinPropinas: baseConIVA, baseImponible: iva.base, cuotaIVA: iva.cuota },
     productos: Array.from(productosAgg.values()),
+    productosDetalle: productosDetalle.sort((a, b) => a.fechaMs - b.fechaMs),   // v1.1.6
+    productosTotal: round(productosDetalle.reduce((acc, x) => acc + x.importe, 0)),
     staff: Array.from(staffAgg.values()).map(s => ({ ...s, cobrado: round(s.cobrado) })).sort((a, b) => b.cobrado - a.cobrado),
     externos: externosArr,
     externosComisionTotal: round(externosArr.reduce((s, e) => s + e.comision, 0)),
     descuentos: descuentosArr,                  // v1.1.1
-    descuentoTotal: round(descuentoTotal)       // v1.1.1
+    descuentoTotal: round(descuentoTotal),      // v1.1.1
+    especiales: especialesArr,                  // v1.1.5
+    especialesTotal: round(especialesTotal)     // v1.1.5
   };
 }
 
@@ -476,7 +1070,13 @@ async function procesarReconciliacion(reservas, pagos, fechaISO, startOfDay, end
         importe: Number(p.importeTotal) || 0,
         descripcion: p.descripcion || '',
         bookingId: bookId,
-        reservaId
+        reservaId,
+        // v1.1.8 — contexto del cobro para poder juzgarlo de un vistazo
+        hora: horaMadrid(p.fechaPago),
+        metodo: p.tipoPago || '',
+        cobradoPor: String(p.soldBy || '').trim(),
+        fechaCita: '',        // se rellena abajo con una query por lote
+        horaCita: ''
       });
     }
   }
@@ -533,6 +1133,33 @@ async function procesarReconciliacion(reservas, pagos, fechaISO, startOfDay, end
     }
   }
 
+  // v1.1.8 — Resolver la fecha de la cita de cada cobro de otro día. Sin
+  // esto el bloque no puede decir "esto es del viernes", que es justo el
+  // dato que explica el descuadre.
+  if (cobrosDeOtrosDias.length) {
+    try {
+      const ids = [...new Set(cobrosDeOtrosDias.map(c => c.reservaId).filter(Boolean))];
+      for (let i = 0; i < ids.length; i += 100) {
+        const lote = ids.slice(i, i + 100);
+        const rr = await wixData.query(COLECCION_RESERVAS)
+          .hasSome('_id', lote)
+          .limit(200)
+          .find({ suppressAuth: true });
+        const porId = new Map((rr.items || []).map(x => [x._id, x]));
+        for (const c of cobrosDeOtrosDias) {
+          const reserva = porId.get(c.reservaId);
+          if (!reserva || !reserva.fechaReserva) continue;
+          const d = new Date(reserva.fechaReserva);
+          c.fechaCita = d.toLocaleDateString('es-ES', { day: '2-digit', month: 'short', timeZone: 'Europe/Madrid' });
+          c.horaCita = horaMadrid(d);
+          if (!c.cliente) c.cliente = (reserva.clientName || '').trim();
+        }
+      }
+    } catch (e) {
+      console.warn(`${TAG} No se pudo resolver la fecha de las citas de otros días:`, e.message);
+    }
+  }
+
   const round = v => Math.round(v * 100) / 100;
   const totalCobradoOtrosDias = round(cobrosDeOtrosDias.reduce((s, c) => s + c.importe, 0));
   const totalCobradasFueraHoy = round(cobradasFueraDelDia.reduce((s, c) => s + c.importe, 0));
@@ -545,6 +1172,181 @@ async function procesarReconciliacion(reservas, pagos, fechaISO, startOfDay, end
     diferencia: round(totalCobradoOtrosDias - totalCobradasFueraHoy)
   };
 }
+
+// =====================================================
+// OBSERVATORIO SEMANAL  (v1.1.8)
+// =====================================================
+// Semana natural lunes→domingo que contiene `fechaISO`. Por día: cobrado
+// por método y estado de cuadre de los tres que se pueden cuadrar.
+//
+// Qué significa CUADRADO en cada método:
+//   · EFECTIVO — hay arqueo hecho ese día (CashRegister en 'saved' o
+//     'closed') y la diferencia entre contado y esperado es 0.
+//   · TARJETA  — alguien ha confirmado que la lectura del datáfono
+//     coincide con el informe (`cardConfirmed`).
+//   · BIZUM    — ídem con `bizumConfirmed`.
+// Un método sin cobros ese día no se marca PENDIENTE: no hay nada que
+// cuadrar. Los días futuros tampoco se marcan.
+const COL_CASH_REGISTER = 'CashRegister';
+
+function _lunesDeLaSemana(fechaISO) {
+  const d = new Date(`${fechaISO}T12:00:00.000`);
+  const dow = d.getDay();                 // 0 domingo … 6 sábado
+  const retro = (dow === 0) ? 6 : dow - 1;  // lunes como día 1
+  d.setDate(d.getDate() - retro);
+  return d;
+}
+
+function _iso(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${dd}`;
+}
+
+// v1.2.0 — _cesta() ELIMINADA.
+// Mandaba a 'otros' el importe íntegro de cada Mixto, los Canjes y
+// cualquier tipoPago vacío. Un cajón de sastre en una pantalla de
+// cuadre es un error conceptual: si un euro cae ahí, no se puede
+// contrastar contra el datáfono, ni contra el cajón, ni contra el
+// extracto. El reparto lo hace ahora _repartirCanales().
+
+export const obtenerObservatorioSemanal = webMethod(
+  Permissions.Anyone,
+  async ({ fechaISO }) => {
+    try {
+      if (!fechaISO) return { ok: false, error: 'fechaISO requerido' };
+
+      const lunes = _lunesDeLaSemana(fechaISO);
+      const domingo = new Date(lunes); domingo.setDate(domingo.getDate() + 6);
+      const desde = new Date(`${_iso(lunes)}T00:00:00.000`);
+      const hasta = new Date(`${_iso(domingo)}T23:59:59.999`);
+      console.log(`${TAG} 📅 Observatorio semanal ${_iso(lunes)} → ${_iso(domingo)}`);
+
+      // Cobros de la semana
+      let pagos = [];
+      let skip = 0, hasMore = true;
+      while (hasMore && skip < 5000) {
+        const r = await wixData.query(COLECCION_PAGOS)
+          .ge('fechaPago', desde).le('fechaPago', hasta)
+          .skip(skip).limit(500)
+          .find({ suppressAuth: true });
+        pagos = pagos.concat(r.items || []);
+        hasMore = (r.items || []).length === 500;
+        skip += 500;
+      }
+
+      // Arqueos de la semana
+      let registros = [];
+      try {
+        const rc = await wixData.query(COL_CASH_REGISTER)
+          .ge('registerDate', desde).le('registerDate', hasta)
+          .limit(50)
+          .find({ suppressAuth: true });
+        registros = rc.items || [];
+      } catch (eReg) {
+        console.warn(`${TAG} No se pudo leer CashRegister de la semana:`, eReg.message);
+      }
+
+      const round = v => Math.round(v * 100) / 100;
+      const hoyISO = _iso(new Date());
+      const NOMBRES = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+
+      const dias = [];
+      for (let i = 0; i < 7; i++) {
+        const dia = new Date(lunes); dia.setDate(dia.getDate() + i);
+        const iso = _iso(dia);
+        const ini = new Date(`${iso}T00:00:00.000`).getTime();
+        const fin = new Date(`${iso}T23:59:59.999`).getTime();
+
+        // v1.2.0 — tres canales físicos + anomalías identificadas.
+        const acc = { tarjeta: 0, efectivo: 0, bizum: 0, anomalia: 0, canjes: 0 };
+        const anomaliasDia = {};
+        for (const p of pagos) {
+          if (String(p.status || '').toUpperCase() === 'CANCELADO') continue;
+          const t = p.fechaPago ? new Date(p.fechaPago).getTime() : 0;
+          if (t < ini || t > fin) continue;
+
+          const rep = _repartirCanales(p);
+          acc.tarjeta  += rep.tarjeta;
+          acc.efectivo += rep.efectivo;
+          acc.bizum    += rep.bizum;
+          if (rep.canje) acc.canjes += 1;
+          if (Math.abs(rep.anomalia) >= 0.005) {
+            acc.anomalia += rep.anomalia;
+            anomaliasDia[rep.anomaliaLabel] = (anomaliasDia[rep.anomaliaLabel] || 0) + rep.anomalia;
+          }
+        }
+        const anomaliasDetalle = Object.entries(anomaliasDia)
+          .map(([motivo, importe]) => ({ motivo, importe: round(importe) }));
+
+        const reg = registros.find(r => {
+          const t = r.registerDate ? new Date(r.registerDate).getTime() : 0;
+          return t >= ini && t <= fin;
+        }) || null;
+
+        const arqueado = !!reg && (reg.status === 'saved' || reg.status === 'closed');
+        const futuro = iso > hoyISO;
+
+        // estado: 'ok' | 'pendiente' | 'na'  (na = nada que cuadrar)
+        const estado = (importe, cuadrado) => {
+          if (futuro) return 'na';
+          if (!(importe > 0)) return 'na';
+          return cuadrado ? 'ok' : 'pendiente';
+        };
+
+        dias.push({
+          fechaISO: iso,
+          nombre: NOMBRES[i],
+          diaMes: dia.getDate(),
+          esHoy: iso === hoyISO,
+          futuro,
+          tarjeta: round(acc.tarjeta),
+          efectivo: round(acc.efectivo),
+          bizum: round(acc.bizum),
+          // v1.2.0 — `otros` se conserva SOLO por compatibilidad con el
+          // widget actual, que pinta esa línea con `if (dia.otros > 0)`.
+          // Ya no es un cajón de sastre: vale exactamente el importe en
+          // anomalías, así que en un día limpio vale 0 y la línea
+          // desaparece sola. Cuando aparezca, hay algo que corregir.
+          otros: round(acc.anomalia),
+          anomalia: round(acc.anomalia),
+          anomaliasDetalle,
+          canjes: acc.canjes,
+          total: round(acc.tarjeta + acc.efectivo + acc.bizum + acc.anomalia),
+          estadoTarjeta: estado(acc.tarjeta, reg ? reg.cardConfirmed === true : false),
+          estadoEfectivo: estado(acc.efectivo, arqueado && Math.abs(Number(reg.difference) || 0) < 0.005),
+          estadoBizum: estado(acc.bizum, reg ? reg.bizumConfirmed === true : false),
+          arqueoStatus: reg ? (reg.status || '') : ''
+        });
+      }
+
+      const tot = dias.reduce((a, d) => ({
+        tarjeta: a.tarjeta + d.tarjeta, efectivo: a.efectivo + d.efectivo,
+        bizum: a.bizum + d.bizum, otros: a.otros + d.otros,
+        canjes: a.canjes + d.canjes, total: a.total + d.total
+      }), { tarjeta: 0, efectivo: 0, bizum: 0, otros: 0, canjes: 0, total: 0 });
+
+      return {
+        ok: true,
+        desde: _iso(lunes),
+        hasta: _iso(domingo),
+        dias,
+        totales: {
+          tarjeta: round(tot.tarjeta), efectivo: round(tot.efectivo),
+          bizum: round(tot.bizum),
+          otros: round(tot.otros),          // compat widget — = anomalia
+          anomalia: round(tot.otros),       // v1.2.0
+          canjes: tot.canjes,               // v1.2.0 — recuento, no importe
+          total: round(tot.total)
+        }
+      };
+    } catch (error) {
+      console.error(`${TAG} ❌ obtenerObservatorioSemanal:`, error);
+      return { ok: false, error: error.message };
+    }
+  }
+);
 
 // =====================================================
 // FUNCIÓN PRINCIPAL (REESCRITA v1.1.0)
@@ -639,8 +1441,34 @@ export const obtenerDatosCierreExtendidos = webMethod(
       }
       console.log(`${TAG} Q2.5 pagosPorReserva: ${Object.keys(pagosPorReserva).length} pagos cruzados`);
 
+      // v1.2.1 — Q2.6: cobros de citas de profesional EXTERNO.
+      // Viven en PagoreservasExternos con bookingId 'EXT_<reservaId>'.
+      // Mismo patrón de lotes que Q2.5. Solo se usa para resolver el
+      // método de cobro en Rendimiento Productivo: sin esto, una cita
+      // externa cobrada aparecía sin método en el informe.
+      const pagosExtPorReserva = {};
+      if (reservaIds.length) {
+        const targetExt = reservaIds.map(id => `EXT_${id}`);
+        for (let i = 0; i < targetExt.length; i += 100) {
+          const batch = targetExt.slice(i, i + 100);
+          try {
+            const rx = await wixData.query(COLECCION_PAGOS_EXT)
+              .hasSome('bookingId', batch)
+              .limit(500)
+              .find({ suppressAuth: true });
+            for (const pagoExt of (rx.items || [])) {
+              const reservaId = String(pagoExt.bookingId || '').slice(4);
+              if (reservaId) pagosExtPorReserva[reservaId] = pagoExt;
+            }
+          } catch (e) {
+            console.warn(`${TAG} Error cargando pagosExtPorReserva:`, e.message);
+          }
+        }
+      }
+      console.log(`${TAG} Q2.6 pagosExtPorReserva: ${Object.keys(pagosExtPorReserva).length} cobros externos cruzados`);
+
       const vatRate = await leerVatRate();
-      const rendimiento = procesarRendimiento(reservas, staffList, pagosPorReserva);
+      const rendimiento = procesarRendimiento(reservas, staffList, pagosPorReserva, pagosExtPorReserva);
       const cierre = procesarCierre(pagos, staffList, vatRate);
       const reconciliacion = await procesarReconciliacion(reservas, pagos, fechaISO, startOfDay, endOfDay, pagosPorReserva);
 

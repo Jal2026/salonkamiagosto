@@ -1,8 +1,8 @@
 // =====================================================
 // KAMISUITE - Backend: Gestión de Personal (Staff Config)
 // =====================================================
-// VERSION: 1.3.3
-// FECHA: 13 de marzo de 2026
+// VERSION: 1.3.5
+// FECHA: 6 de julio de 2026
 //
 // ARCHIVO: backend/staffConfigLogic.web.js
 //
@@ -42,6 +42,34 @@
 //     profileImage          (Text)    ← URL wix:image:// o https://
 //
 // CHANGELOG:
+//   v1.3.5 - 06/07/2026 - 🚫 BLOQUEOS Y CIERRES MIGRADOS A KamisuiteReservations (V2).
+//                         ANTES: crearStaffBloqueo y crearCierreSalon escribían en
+//                         Wix Bookings (sessions.createSession, tags:['Blocked']).
+//                         Recepción PRO V2 lee bloqueos desde KamisuiteReservations
+//                         (family:'BLOQUEO'), NO desde Wix Bookings → los bloqueos
+//                         creados por este backend NO se veían en V2 (sí en V1).
+//                         AHORA: ambas funciones delegan en crearBloqueo() de
+//                         recepcionProLogic.web (patrón ya probado y desplegado,
+//                         mismo import cruzado que usa clienteAreaLogic.web).
+//                         La fila BLOQUEO en KamisuiteReservations es visible en
+//                         Recepción V2 con su bloque visual, y el motor de huecos
+//                         público la respeta (ocupa:true, status:'CONFIRMADA').
+//                         + RANGO DE FECHAS: fechaFin opcional. Sin fechaFin =
+//                         un solo día (compat). Con fechaFin = itera cada día del
+//                         rango y bloquea el DÍA COMPLETO según el horario laboral
+//                         de cada empleado (leerHorarioStaffEnDia, patrón literal
+//                         de widgetPublicoLogic). Días que el empleado libra se
+//                         omiten (no hay nada que bloquear).
+//                         NOTA: getStaffBloqueos / eliminarStaffBloqueo /
+//                         getCierresSalon / eliminarCierreSalon SIGUEN leyendo/
+//                         borrando de Wix Bookings — pendiente migrarlas también a
+//                         KamisuiteReservations en próxima sesión (fuera de alcance).
+//   v1.3.4 - 06/07/2026 - +accessLevel (Number 1-4) en getStaffCompleto (map),
+//                         updateStaffDatosBasicos (propagación READ-MERGE-UPDATE)
+//                         y crearStaffMember (opcional, solo si se envía).
+//                         Cierra el circuito que ya consume Recepción PRO V2
+//                         (widget v1.1.61 línea 6140 → ReceptionAccessLog.accessLevel).
+//                         Puramente aditivo, resto del backend intacto.
 //   v1.2.1 - 13/03/2026 - FIX: scheduleId path en createResource (created.scheduleIds[0])
 //   v1.2.0 - 13/03/2026 - getStaffHorario parsea sesiones Wix a [{dia,inicio,fin}],
 //                          isExternal editable desde tab Datos (solo StaffConfig, no Wix)
@@ -59,8 +87,14 @@ import { elevate } from 'wix-auth';
 import { resources as resourcesApi, sessions, bookings } from 'wix-bookings-backend';
 import wixData from 'wix-data';
 import { mediaManager } from 'wix-media-backend';
+// v1.3.5 — Bloqueos y cierres V2: se escriben en KamisuiteReservations vía la
+// función ya probada de recepcionProLogic. Mismo patrón de import cruzado
+// backend→backend que usa clienteAreaLogic.web (import { cancelarReserva }
+// from 'backend/recepcionProLogic.web'). Sin dependencia circular:
+// recepcionProLogic NO importa nada de staffConfigLogic.
+import { crearBloqueo as crearBloqueoV2 } from 'backend/recepcionProLogic.web';
 
-const VERSION = '1.3.3';
+const VERSION = '1.3.5';
 const TAG = `[StaffConfig][${VERSION}]`;
 
 // ─── CMS ───────────────────────────────────────────
@@ -385,6 +419,8 @@ export const getStaffCompleto = webMethod(
           enWix:                   !!(s.wixResourceId),  // flag para chip en widget
           commissionPercentage:    s.commissionPercentage || 0,
           notes:                   s.notes || '',
+          // v1.3.4 — nivel de acceso (número 1-4) o null si sin asignar
+          accessLevel:             (typeof s.accessLevel === 'number') ? s.accessLevel : null,
           workingHoursSessionIds:  s.workingHoursSessionIds || '[]',
           // Email/tel actuales desde Wix Resource
           email:                   wixLive.email || '',
@@ -566,6 +602,8 @@ export const updateStaffDatosBasicos = webMethod(
       if (datos.notes                !== undefined) cmsUpdate.notes                = datos.notes;
       if (datos.externalModule       !== undefined) cmsUpdate.externalModule       = datos.externalModule;
       if (datos.commissionPercentage !== undefined) cmsUpdate.commissionPercentage = datos.commissionPercentage;
+      // v1.3.4 — nivel de acceso (Number 1-4) o null si se limpia
+      if (datos.accessLevel          !== undefined) cmsUpdate.accessLevel          = datos.accessLevel;
 
       await wixData.update(CMS_STAFF, cmsUpdate, { suppressAuth: true });
       console.log(`${TAG} ✅ StaffConfig actualizado`);
@@ -908,6 +946,12 @@ export const crearStaffMember = webMethod(
         workingHoursSessionIds: '[]',
         notes:                  datos.notes || ''
       };
+      // v1.3.4 — accessLevel opcional en el alta (Number 1-4). Si no viene,
+      // el registro se crea sin este campo y se asigna después desde el
+      // tab DATOS de la edición del empleado.
+      if (typeof datos.accessLevel === 'number') {
+        nuevoRegistro.accessLevel = datos.accessLevel;
+      }
 
       const inserted = await wixData.insert(CMS_STAFF, nuevoRegistro, { suppressAuth: true });
       console.log(`${TAG} ✅ StaffConfig creado: ${inserted._id}`);
@@ -993,6 +1037,80 @@ export const eliminarStaffMember = webMethod(
 // 11. BLOQUEOS — GESTIÓN DE DÍAS LIBRES / CIERRES
 // =====================================================
 
+// ─── HELPERS DE HORARIO (v1.3.5) ─────────────────────
+// Copia LITERAL de widgetPublicoLogic.web.js (parseHHMM + leerHorarioStaffEnDia).
+// Se usan para calcular el "día completo" según el horario laboral V2 de cada
+// empleado cuando se bloquea un RANGO de fechas. No se inventa nada: es el mismo
+// parser que el motor de huecos público ya usa en producción.
+function parseHHMM(s) {
+  const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = +m[1], mi = +m[2];
+  if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+  return h * 60 + mi;
+}
+
+// Lee horario {from,to} (en minutos) del staff para un dow concreto.
+// Devuelve null si está cerrado, no tiene horario configurado, o no parsea.
+// staffRow = fila de StaffConfig (tiene workingHoursSessionIds en formato V2).
+function leerHorarioStaffEnDia(staffRow, dow) {
+  const raw = staffRow?.workingHoursSessionIds;
+  if (!raw) return null;
+  let items = [];
+  try {
+    if (typeof raw === 'string') {
+      const obj = JSON.parse(raw);
+      items = Array.isArray(obj?.items) ? obj.items : (Array.isArray(obj) ? obj : []);
+    } else if (raw && typeof raw === 'object') {
+      items = Array.isArray(raw.items) ? raw.items : (Array.isArray(raw) ? raw : []);
+    }
+  } catch (e) {
+    console.warn(`${TAG} ⚠️ workingHours JSON inválido (${staffRow?.canonicalName || staffRow?._id}):`, e.message);
+    return null;
+  }
+  const day = items.find(it => Number(it?.dow) === dow);
+  if (!day || !day.open) return null;
+  const from = parseHHMM(day.from);
+  const to = parseHHMM(day.to);
+  if (from == null || to == null || from >= to) return null;
+  return { from, to };
+}
+
+// minutos → 'HH:MM'
+function minToHHMM(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  return String(h).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+}
+
+// Devuelve un array de fechas 'YYYY-MM-DD' desde fechaIni hasta fechaFin
+// (ambas inclusive). Si fechaFin es falsy o igual a fechaIni → solo [fechaIni].
+// Itera en horario Madrid como fecha civil (sin horas), por lo que se usa
+// mediodía UTC para evitar saltos de día por DST.
+function diasEnRango(fechaIni, fechaFin) {
+  if (!fechaFin || fechaFin === fechaIni) return [fechaIni];
+  const [y1, m1, d1] = String(fechaIni).split('-').map(Number);
+  const [y2, m2, d2] = String(fechaFin).split('-').map(Number);
+  const ini = new Date(Date.UTC(y1, m1 - 1, d1, 12, 0, 0));
+  const fin = new Date(Date.UTC(y2, m2 - 1, d2, 12, 0, 0));
+  if (fin < ini) return [fechaIni]; // rango invertido → tratar como un día
+  const out = [];
+  const cur = new Date(ini.getTime());
+  while (cur.getTime() <= fin.getTime()) {
+    const yy = cur.getUTCFullYear();
+    const mm = String(cur.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(cur.getUTCDate()).padStart(2, '0');
+    out.push(`${yy}-${mm}-${dd}`);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+// dow (0=Dom..6=Sab) de una fecha 'YYYY-MM-DD' interpretada como fecha civil.
+function dowDeFecha(fechaISO) {
+  const [y, mo, d] = String(fechaISO).split('-').map(Number);
+  return new Date(y, mo - 1, d).getDay();
+}
+
 // ── Leer bloqueos de un empleado ────────────────────
 export const getStaffBloqueos = webMethod(
   Permissions.Anyone,
@@ -1049,46 +1167,120 @@ export const getStaffBloqueos = webMethod(
 );
 
 // ── Crear bloqueo para un empleado ──────────────────
+// v1.3.5 — Escribe en KamisuiteReservations (family:'BLOQUEO') vía la función
+//          crearBloqueoV2 (crearBloqueo de recepcionProLogic), ya probada y
+//          desplegada. Adiós a sessions.createSession de Wix Bookings: así el
+//          bloqueo SÍ se ve en Recepción PRO V2 con su bloque visual.
+//
+// Parámetros:
+//   staffConfigId : _id de la fila StaffConfig del empleado. Requerido.
+//   fecha         : 'YYYY-MM-DD' fecha inicio (o día único). Requerido.
+//   inicio, fin   : 'HH:MM'. Solo se usan para el DÍA ÚNICO (sin fechaFin),
+//                   conservando el comportamiento previo (el usuario elige el
+//                   tramo). Requeridos para el caso de día único.
+//   fechaFin      : 'YYYY-MM-DD' opcional. Si llega y es > fecha → RANGO:
+//                   cada día del rango se bloquea el DÍA COMPLETO según el
+//                   horario laboral del empleado (leerHorarioStaffEnDia).
+//                   Los días que el empleado libra se omiten.
+//   motivo        : string opcional.
 export const crearStaffBloqueo = webMethod(
   Permissions.Anyone,
-  async ({ staffConfigId, fecha, inicio, fin, motivo }) => {
+  async ({ staffConfigId, fecha, inicio, fin, motivo, fechaFin }) => {
     try {
-      console.log(`${TAG} 🔒 Crear bloqueo: ${staffConfigId} | ${fecha} ${inicio}-${fin}`);
+      console.log(`${TAG} 🔒 Crear bloqueo: ${staffConfigId} | ${fecha}${fechaFin ? '→' + fechaFin : ''} ${inicio}-${fin}`);
 
-      if (!staffConfigId || !fecha || !inicio || !fin) {
-        return { ok: false, error: { message: 'Faltan parámetros: staffConfigId, fecha, inicio, fin' } };
+      if (!staffConfigId || !fecha) {
+        return { ok: false, error: { message: 'Faltan parámetros: staffConfigId, fecha' } };
       }
 
       const staffRecord = await wixData.get(CMS_STAFF, staffConfigId, { suppressAuth: true });
-      if (!staffRecord?.wixScheduleId) {
-        return { ok: false, error: { message: 'El empleado no tiene wixScheduleId configurado' } };
+      if (!staffRecord) {
+        return { ok: false, error: { message: 'Empleado no encontrado en StaffConfig' } };
+      }
+      // El bloqueo V2 se cruza por wixResourceId (r.staffId === s.wixResourceId).
+      const staffId = staffRecord.wixResourceId || '';
+      if (!staffId) {
+        return { ok: false, error: { message: 'El empleado no tiene wixResourceId configurado' } };
       }
 
-      // Construir fechas en timezone Madrid (UTC+1/UTC+2)
-      // Al añadir el offset evitamos que JS lo interprete como UTC
-      const offsetMs = new Date().toLocaleString('en-US', { timeZone: 'Europe/Madrid', timeZoneName: 'short' }).includes('GMT+2') ? 2 * 3600000 : 3600000;
-      const startDate = new Date(new Date(`${fecha}T${inicio}:00`).getTime() - offsetMs);
-      const endDate   = new Date(new Date(`${fecha}T${fin}:00`).getTime() - offsetMs);
+      const esRango = !!(fechaFin && fechaFin !== fecha);
 
-      if (endDate <= startDate) {
-        return { ok: false, error: { message: 'La hora de fin debe ser posterior a la de inicio' } };
+      // ── CASO DÍA ÚNICO ────────────────────────────────
+      // Conserva el comportamiento previo: el usuario define inicio/fin.
+      if (!esRango) {
+        if (!inicio || !fin) {
+          return { ok: false, error: { message: 'Faltan parámetros: inicio, fin' } };
+        }
+        const mIni = parseHHMM(inicio);
+        const mFin = parseHHMM(fin);
+        if (mIni == null || mFin == null || mFin <= mIni) {
+          return { ok: false, error: { message: 'La hora de fin debe ser posterior a la de inicio' } };
+        }
+        const durMin = mFin - mIni;
+
+        const res = await crearBloqueoV2({
+          fechaISO:    fecha,
+          horaHHmm:    inicio,
+          duracionMin: durMin,
+          staffId,
+          motivo:      motivo || ''
+        });
+
+        if (!res?.ok) {
+          return { ok: false, error: res?.error || { message: 'Error al crear el bloqueo V2' } };
+        }
+
+        console.log(`${TAG} ✅ Bloqueo V2 creado: ${res.bloqueoId}`);
+        return { ok: true, sessionId: res.bloqueoId, creados: 1, omitidos: [] };
       }
 
-      const sessionInfo = {
-        scheduleId: staffRecord.wixScheduleId,
-        start: { timestamp: startDate },
-        end:   { timestamp: endDate },
-        type:  'EVENT',
-        tags:  ['Blocked'],
-        notes: motivo || ''
+      // ── CASO RANGO: día completo por día (horario laboral) ──
+      const dias = diasEnRango(fecha, fechaFin);
+      const creados = [];
+      const omitidos = [];
+
+      for (const dia of dias) {
+        const dow = dowDeFecha(dia);
+        const horario = leerHorarioStaffEnDia(staffRecord, dow);
+        if (!horario) {
+          // El empleado libra ese día → no hay nada que bloquear.
+          omitidos.push({ fecha: dia, motivo: 'libra' });
+          console.log(`${TAG} ⏭ ${dia} (dow ${dow}) → ${staffRecord.displayName || staffRecord.canonicalName} libra, omitido`);
+          continue;
+        }
+        const horaHHmm = minToHHMM(horario.from);
+        const durMin   = horario.to - horario.from;
+
+        try {
+          const res = await crearBloqueoV2({
+            fechaISO:    dia,
+            horaHHmm,
+            duracionMin: durMin,
+            staffId,
+            motivo:      motivo || ''
+          });
+          if (res?.ok) {
+            creados.push({ fecha: dia, bloqueoId: res.bloqueoId });
+            console.log(`${TAG} ✅ ${dia} bloqueado ${horaHHmm} (${durMin}min) → ${res.bloqueoId}`);
+          } else {
+            omitidos.push({ fecha: dia, motivo: res?.error?.message || 'error' });
+            console.warn(`${TAG} ⚠️ ${dia} no bloqueado: ${res?.error?.message}`);
+          }
+        } catch (errDia) {
+          omitidos.push({ fecha: dia, motivo: errDia.message });
+          console.error(`${TAG} ❌ ${dia} error: ${errDia.message}`);
+        }
+      }
+
+      console.log(`${TAG} ✅ Rango completado: ${creados.length} creados, ${omitidos.length} omitidos`);
+      return {
+        ok: creados.length > 0,
+        sessionId: creados[0]?.bloqueoId || '',
+        creados: creados.length,
+        omitidos,
+        detalle: creados,
+        error: creados.length === 0 ? { message: 'No se creó ningún bloqueo en el rango (¿el empleado libra todos esos días?)' } : undefined
       };
-
-      const elevatedCreate = elevate(sessions.createSession);
-      const created = await elevatedCreate(sessionInfo);
-      const newId = created?._id || created?.id || '';
-
-      console.log(`${TAG} ✅ Bloqueo creado: ${newId}`);
-      return { ok: true, sessionId: newId };
 
     } catch (e) {
       console.error(`${TAG} ❌ crearStaffBloqueo:`, e.message);
@@ -1122,62 +1314,135 @@ export const eliminarStaffBloqueo = webMethod(
 );
 
 // ── Cierre del salón — bloquea todos los empleados activos ──
+// v1.3.5 — Escribe bloqueos en KamisuiteReservations (family:'BLOQUEO') vía
+//          crearBloqueoV2 para cada empleado activo, de modo que el cierre SÍ se
+//          vea en Recepción PRO V2. + Rango de fechas (fechaFin opcional).
+//
+// Parámetros:
+//   fecha       : 'YYYY-MM-DD' inicio (o día único). Requerido.
+//   inicio, fin : 'HH:MM'. Solo día único (sin fechaFin): tramo elegido por el
+//                 usuario, mismo comportamiento previo. Requeridos en día único.
+//   fechaFin    : 'YYYY-MM-DD' opcional. Rango → cada día completo según el
+//                 horario laboral de cada empleado (los que libran ese día se
+//                 omiten para ese día).
+//   motivo      : string opcional.
 export const crearCierreSalon = webMethod(
   Permissions.Anyone,
-  async ({ fecha, inicio, fin, motivo }) => {
+  async ({ fecha, inicio, fin, motivo, fechaFin }) => {
     try {
-      console.log(`${TAG} 🔒 Cierre salón: ${fecha} ${inicio}-${fin}`);
+      console.log(`${TAG} 🔒 Cierre salón: ${fecha}${fechaFin ? '→' + fechaFin : ''} ${inicio}-${fin}`);
 
-      if (!fecha || !inicio || !fin) {
-        return { ok: false, error: { message: 'Faltan parámetros: fecha, inicio, fin' } };
+      if (!fecha) {
+        return { ok: false, error: { message: 'Falta parámetro: fecha' } };
       }
 
-      const offsetMs2 = new Date().toLocaleString('en-US', { timeZone: 'Europe/Madrid', timeZoneName: 'short' }).includes('GMT+2') ? 2 * 3600000 : 3600000;
-      const startDate = new Date(new Date(`${fecha}T${inicio}:00`).getTime() - offsetMs2);
-      const endDate   = new Date(new Date(`${fecha}T${fin}:00`).getTime() - offsetMs2);
+      const esRango = !!(fechaFin && fechaFin !== fecha);
+      const motivoCierre = motivo || 'Cierre del salón';
 
-      if (endDate <= startDate) {
-        return { ok: false, error: { message: 'La hora de fin debe ser posterior a la de inicio' } };
-      }
-
-      // Leer todos los empleados activos con scheduleId — incluye CUALQUIERA
-      // porque el motor de disponibilidad consulta ese recurso
+      // Leer todos los empleados activos con wixResourceId. Mantiene el mismo
+      // criterio que la versión previa (incluye CUALQUIERA porque el motor de
+      // disponibilidad consulta ese recurso).
       const cmsResult = await wixData.query(CMS_STAFF).limit(50).find({ suppressAuth: true });
       const activos = (cmsResult.items || []).filter(s =>
-        s.wixScheduleId &&
         s.wixResourceId
       );
 
       if (activos.length === 0) {
-        return { ok: false, error: { message: 'No hay empleados activos con horario configurado' } };
+        return { ok: false, error: { message: 'No hay empleados activos configurados' } };
       }
 
-      const elevatedCreate = elevate(sessions.createSession);
       const resultados = [];
 
-      for (const s of activos) {
-        try {
-          const sessionInfo = {
-            scheduleId: s.wixScheduleId,
-            start: { timestamp: startDate },
-            end:   { timestamp: endDate },
-            type:  'EVENT',
-            tags:  ['Blocked'],
-            notes: motivo || 'Cierre del salón'
-          };
-          const created = await elevatedCreate(sessionInfo);
-          const newId = created?._id || created?.id || '';
-          resultados.push({ nombre: s.displayName || s.canonicalName, ok: true, sessionId: newId });
-          console.log(`${TAG} ✅ Cierre: ${s.displayName} → ${newId}`);
-        } catch (err) {
-          resultados.push({ nombre: s.displayName || s.canonicalName, ok: false, error: err.message });
-          console.error(`${TAG} ❌ Cierre fallido para ${s.displayName}: ${err.message}`);
+      // ── CASO DÍA ÚNICO ────────────────────────────────
+      // El usuario define inicio/fin; se aplica el mismo tramo a todos.
+      if (!esRango) {
+        if (!inicio || !fin) {
+          return { ok: false, error: { message: 'Faltan parámetros: inicio, fin' } };
+        }
+        const mIni = parseHHMM(inicio);
+        const mFin = parseHHMM(fin);
+        if (mIni == null || mFin == null || mFin <= mIni) {
+          return { ok: false, error: { message: 'La hora de fin debe ser posterior a la de inicio' } };
+        }
+        const durMin = mFin - mIni;
+
+        for (const s of activos) {
+          try {
+            const res = await crearBloqueoV2({
+              fechaISO:    fecha,
+              horaHHmm:    inicio,
+              duracionMin: durMin,
+              staffId:     s.wixResourceId,
+              motivo:      motivoCierre
+            });
+            const nombre = s.displayName || s.canonicalName;
+            if (res?.ok) {
+              resultados.push({ nombre, ok: true, sessionId: res.bloqueoId });
+              console.log(`${TAG} ✅ Cierre: ${nombre} → ${res.bloqueoId}`);
+            } else {
+              resultados.push({ nombre, ok: false, error: res?.error?.message });
+              console.warn(`${TAG} ⚠️ Cierre no aplicado a ${nombre}: ${res?.error?.message}`);
+            }
+          } catch (err) {
+            resultados.push({ nombre: s.displayName || s.canonicalName, ok: false, error: err.message });
+            console.error(`${TAG} ❌ Cierre fallido para ${s.displayName}: ${err.message}`);
+          }
+        }
+
+        const exitosos = resultados.filter(r => r.ok).length;
+        console.log(`${TAG} ✅ Cierre completado: ${exitosos}/${activos.length} empleados`);
+        return { ok: exitosos > 0, exitosos, total: activos.length, resultados };
+      }
+
+      // ── CASO RANGO: día completo por día (horario laboral de cada empleado) ──
+      const dias = diasEnRango(fecha, fechaFin);
+      let exitosos = 0;
+      let intentos = 0;
+
+      for (const dia of dias) {
+        const dow = dowDeFecha(dia);
+        for (const s of activos) {
+          const horario = leerHorarioStaffEnDia(s, dow);
+          if (!horario) {
+            // Ese empleado libra ese día (o CUALQUIERA sin horario) → omitir.
+            continue;
+          }
+          intentos++;
+          const horaHHmm = minToHHMM(horario.from);
+          const durMin   = horario.to - horario.from;
+          const nombre   = s.displayName || s.canonicalName;
+          try {
+            const res = await crearBloqueoV2({
+              fechaISO:    dia,
+              horaHHmm,
+              duracionMin: durMin,
+              staffId:     s.wixResourceId,
+              motivo:      motivoCierre
+            });
+            if (res?.ok) {
+              exitosos++;
+              resultados.push({ nombre, fecha: dia, ok: true, sessionId: res.bloqueoId });
+              console.log(`${TAG} ✅ ${dia} cierre ${nombre} ${horaHHmm} (${durMin}min) → ${res.bloqueoId}`);
+            } else {
+              resultados.push({ nombre, fecha: dia, ok: false, error: res?.error?.message });
+              console.warn(`${TAG} ⚠️ ${dia} ${nombre} no bloqueado: ${res?.error?.message}`);
+            }
+          } catch (err) {
+            resultados.push({ nombre, fecha: dia, ok: false, error: err.message });
+            console.error(`${TAG} ❌ ${dia} ${nombre} error: ${err.message}`);
+          }
         }
       }
 
-      const exitosos = resultados.filter(r => r.ok).length;
-      console.log(`${TAG} ✅ Cierre completado: ${exitosos}/${activos.length} empleados bloqueados`);
-      return { ok: true, exitosos, total: activos.length, resultados };
+      console.log(`${TAG} ✅ Cierre rango completado: ${exitosos}/${intentos} bloqueos creados en ${dias.length} día(s)`);
+      return {
+        ok: exitosos > 0,
+        exitosos,
+        total: intentos,
+        dias: dias.length,
+        resultados,
+        error: exitosos === 0 ? { message: 'No se creó ningún bloqueo (¿todos libran en el rango?)' } : undefined
+      };
 
     } catch (e) {
       console.error(`${TAG} ❌ crearCierreSalon:`, e.message);

@@ -1,12 +1,71 @@
 // =====================================================
-// BACKEND cashRegisterLogic.web.js — Arqueo de Caja KAMISUITE v1.0.0
+// BACKEND cashRegisterLogic.web.js — Arqueo de Caja KAMISUITE v1.1.4
 // =====================================================
-// FECHA: 11 Mayo 2026
-// VERSION: 1.0.0
+// FECHA: 1 Ago 2026
+// VERSION: 1.1.4
+//
+// CHANGELOG
+//   v1.1.4 · 5 Ago 2026 · CONFIRMACIÓN DE DATÁFONO Y BIZUM
+//     - NEW confirmarLecturaMetodo({ fechaISO, metodo, confirmado,
+//       recordedBy }): marca que la lectura del datáfono (metodo='card')
+//       o el resumen de Bizum (metodo='bizum') coincide con el informe
+//       del día. Escribe los campos booleanos `cardConfirmed` /
+//       `bizumConfirmed` de CashRegister, creando el registro del día si
+//       aún no existe (mismo auto-create que guardarArqueo, para el salón
+//       que no usa apertura formal). Rechaza si la caja está cerrada.
+//     - El arqueo de efectivo NO se toca: contar caja y confirmar una
+//       lectura son cosas distintas y se guardan por separado. Esto es
+//       una confirmación humana, no una conciliación automática: nadie
+//       compara importe a importe con el datáfono.
+//     - Lo consume el Observatorio semanal (cierreLogicExtendido v1.1.8)
+//       para pintar CUADRADO / PENDIENTE por método y día.
+//     - Requiere en CashRegister: cardConfirmed, bizumConfirmed
+//       (Booleano), y opcionalmente cardConfirmedBy / bizumConfirmedBy
+//       (Texto) si se quiere saber quién confirmó.
+//
+//   v1.1.3 · 1 Ago 2026 · LIMPIEZA — getFondoSugerido deja de leer
+//     SalonConfig.fondoCajaFijo (enfoque descartado; causaba el error
+//     'does not have permissions to read on SalonConfig'). Fondo sugerido
+//     apoyado SOLO en el arrastre del cash de ayer. Quitada la constante
+//     COL_SALON_CONFIG. Sin cambios en el arrastre ni en
+//     setOpeningBalance/abrirCaja/calcularEfectivoEsperado.
+//   v1.1.2 · 1 Ago 2026 · Arrastre automático del cash del día anterior
+//     - calcularEfectivoEsperado: si el registro del día NO tiene un
+//       openingBalance forzado (> 0), arrastra el efectivo contado del
+//       cierre anterior (getFondoSugerido → countedCash de ayer). El
+//       'Fondo inicial' del arqueo deja de arrancar en 0: hereda el
+//       cash con el que se cerró el día previo. 'Forzar fondo inicial'
+//       (setOpeningBalance) sigue sobrescribiendo cuando se necesita.
+//   v1.1.1 · 1 Ago 2026 · setOpeningBalance — fondo inicial editable
+//     - NEW setOpeningBalance({ fechaISO, openingBalance }): fija el
+//       fondo del día EXISTA o no la caja (crea, o READ-MERGE-UPDATE si
+//       ya existe; rechaza si está cerrada). Vía directa desde el arqueo.
+//       Usa el campo openingBalance ya existente en CashRegister. No
+//       añade campos nuevos. abrirCaja/getFondoSugerido sin cambios.
+//   v1.1.0 · 1 Ago 2026 · Apertura de caja profesional
+//     - NEW getFondoSugerido({ fechaISO }) — devuelve el fondo inicial
+//       SUGERIDO para abrir la caja del día, con cascada de fallback:
+//         1) SalonConfig.fondoCajaFijo > 0  → origen 'fondoFijo'
+//         2) countedCash del último CashRegister status='closed'
+//            estrictamente anterior a fechaISO → origen 'cierreAyer'
+//         3) countedCash|expectedCash del último CashRegister anterior
+//            (cualquier status) con valor > 0 → origen 'esperadoAyer'
+//         4) 0 → origen 'cero'
+//       Solo LECTURA. No crea ni modifica nada. La usa el page code de
+//       Recepción PRO para pre-rellenar el modal de apertura.
+//     - abrirCaja NO se toca (ya recibía openingBalance + recordedBy).
+//       Sigue siendo la única función que escribe openingBalance.
+//     - Sin cambios en calcularEfectivoEsperado, guardarArqueo,
+//       cerrarCaja, registrarMovimiento ni el resto: el arqueo ya
+//       consumía registro.openingBalance del día, así que el fondo
+//       fijado por abrirCaja fluye a todo el pipeline sin tocar nada más.
+//
+//   v1.0.0 · 11 Mayo 2026 · Creación inicial
 //
 // Colecciones CMS:
 //   CashRegister  — Un registro por día (apertura → cierre)
 //   CashMovements — N movimientos manuales por día
+//   SalonConfig   — (solo lectura en v1.1.0) fondoCajaFijo
 //
 // Field IDs confirmados con Lector CMS (11 Mayo 2026):
 //
@@ -33,7 +92,7 @@
 import { Permissions, webMethod } from 'wix-web-module';
 import wixData from 'wix-data';
 
-const TAG = '[CashRegister v1.0.0]';
+const TAG = '[CashRegister v1.1.4]';
 const COL_REGISTER = 'CashRegister';
 const COL_MOVEMENTS = 'CashMovements';
 const COL_PAGOS = 'PaymentReservations';
@@ -72,6 +131,82 @@ export const getCajaDia = webMethod(
     } catch (error) {
       console.error(`${TAG} ❌ getCajaDia:`, error);
       return { ok: false, error: error.message };
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════
+// getFondoSugerido — Fondo inicial SUGERIDO para abrir el día
+//   Solo lectura. No crea ni modifica nada. Cascada de fallback:
+//     1) countedCash del último CashRegister 'closed' anterior
+//                                              → 'cierreAyer'
+//     2) countedCash|expectedCash del último CashRegister anterior
+//        (cualquier status) con valor > 0      → 'esperadoAyer'
+//     3) 0                                      → 'cero'
+//   (v1.1.3: eliminada la prioridad 'fondoFijo' de SalonConfig.)
+//   Devuelve { ok, fondoSugerido, origen, fechaOrigen }
+// ═══════════════════════════════════════════════════════
+
+export const getFondoSugerido = webMethod(
+  Permissions.SiteMember,
+  async ({ fechaISO }) => {
+    try {
+      console.log(`${TAG} 💡 getFondoSugerido: ${fechaISO}`);
+
+      // Inicio del día objetivo: cualquier registro estrictamente ANTERIOR
+      // a este instante cuenta como "día previo".
+      const inicioHoy = new Date(`${fechaISO}T00:00:00.000`);
+
+      // (v1.1.3) Prioridad 'fondo fijo' (SalonConfig.fondoCajaFijo) ELIMINADA:
+      // era del enfoque descartado del arqueo y provocaba el error
+      // 'does not have permissions to read on SalonConfig'. El fondo sugerido
+      // se apoya SOLO en el arrastre del cash de ayer + 'Forzar fondo inicial'.
+
+      // ── Prioridad 2: último CashRegister CERRADO anterior a hoy ──
+      const cerradoRes = await wixData.query(COL_REGISTER)
+        .lt('registerDate', inicioHoy)
+        .eq('status', 'closed')
+        .descending('registerDate')
+        .limit(1)
+        .find({ suppressAuth: true });
+
+      if (cerradoRes.items.length > 0) {
+        const reg = cerradoRes.items[0];
+        const contado = Number(reg.countedCash || 0);
+        if (contado > 0) {
+          const fechaOrigen = reg.registerDate
+            ? new Date(reg.registerDate).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' })
+            : '';
+          return { ok: true, fondoSugerido: Math.round(contado * 100) / 100, origen: 'cierreAyer', fechaOrigen };
+        }
+      }
+
+      // ── Prioridad 3: último CashRegister anterior (cualquier status) ──
+      const previoRes = await wixData.query(COL_REGISTER)
+        .lt('registerDate', inicioHoy)
+        .descending('registerDate')
+        .limit(1)
+        .find({ suppressAuth: true });
+
+      if (previoRes.items.length > 0) {
+        const reg = previoRes.items[0];
+        const contado = Number(reg.countedCash || 0);
+        const esperado = Number(reg.expectedCash || 0);
+        const valor = contado > 0 ? contado : esperado;
+        if (valor > 0) {
+          const fechaOrigen = reg.registerDate
+            ? new Date(reg.registerDate).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' })
+            : '';
+          return { ok: true, fondoSugerido: Math.round(valor * 100) / 100, origen: 'esperadoAyer', fechaOrigen };
+        }
+      }
+
+      // ── Prioridad 4: sin historial ──
+      return { ok: true, fondoSugerido: 0, origen: 'cero', fechaOrigen: '' };
+    } catch (error) {
+      console.error(`${TAG} ❌ getFondoSugerido:`, error);
+      // Nunca rompe la apertura: si algo falla, sugerimos 0.
+      return { ok: true, fondoSugerido: 0, origen: 'cero', fechaOrigen: '', error: error.message };
     }
   }
 );
@@ -122,6 +257,70 @@ export const abrirCaja = webMethod(
       return { ok: true, registro: inserted, yaExistia: false };
     } catch (error) {
       console.error(`${TAG} ❌ abrirCaja:`, error);
+      return { ok: false, error: error.message };
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════
+// setOpeningBalance — Fija el fondo inicial del día EXISTA o no la caja
+//   A diferencia de abrirCaja (que solo CREA y no toca una caja ya
+//   existente), esta función:
+//     - Si el registro del día existe y NO está cerrado → READ-MERGE-
+//       UPDATE: cambia solo openingBalance.
+//     - Si no existe → lo crea con ese fondo (mismos defaults que abrirCaja).
+//     - Si existe pero está cerrado → rechaza (caja cerrada no se edita).
+//   Es la vía directa para poner/cambiar el fondo desde el arqueo.
+// ═══════════════════════════════════════════════════════
+
+export const setOpeningBalance = webMethod(
+  Permissions.SiteMember,
+  async ({ fechaISO, openingBalance }) => {
+    try {
+      const fondo = Number(openingBalance) || 0;
+      console.log(`${TAG} 💰 setOpeningBalance: ${fechaISO} | fondo=${fondo}€`);
+
+      const { start, end } = _dayRange(fechaISO);
+      const res = await wixData.query(COL_REGISTER)
+        .ge('registerDate', start)
+        .le('registerDate', end)
+        .limit(1)
+        .find({ suppressAuth: true });
+
+      if (res.items.length > 0) {
+        const registro = res.items[0];
+        if (registro.status === 'closed') {
+          return { ok: false, error: 'La caja de este día ya está cerrada' };
+        }
+        // READ-MERGE-UPDATE: solo se toca openingBalance.
+        registro.openingBalance = fondo;
+        const updated = await wixData.update(COL_REGISTER, registro, { suppressAuth: true });
+        console.log(`${TAG} ✅ Fondo actualizado: ${updated._id} → ${fondo}€`);
+        return { ok: true, registro: updated, creado: false };
+      }
+
+      // No existe: crear el registro del día con el fondo (defaults de abrirCaja).
+      const nuevo = {
+        registerDate: new Date(`${fechaISO}T08:00:00.000`),
+        openingBalance: fondo,
+        cashPaymentsTotal: 0,
+        manualEntriesTotal: 0,
+        manualExitsTotal: 0,
+        withdrawalsTotal: 0,
+        expectedCash: 0,
+        countedCash: 0,
+        difference: 0,
+        differenceNote: '',
+        status: 'open',
+        closedBy: '',
+        closedAt: null,
+        countBreakdown: ''
+      };
+      const inserted = await wixData.insert(COL_REGISTER, nuevo, { suppressAuth: true });
+      console.log(`${TAG} ✅ Registro creado con fondo: ${inserted._id} → ${fondo}€`);
+      return { ok: true, registro: inserted, creado: true };
+    } catch (error) {
+      console.error(`${TAG} ❌ setOpeningBalance:`, error);
       return { ok: false, error: error.message };
     }
   }
@@ -225,7 +424,21 @@ export const calcularEfectivoEsperado = webMethod(
         .find({ suppressAuth: true });
 
       const registro = regResult.items.length > 0 ? regResult.items[0] : null;
-      const fondoInicial = Number(registro?.openingBalance || 0);
+      // v1.1.2 — Fondo inicial del día:
+      //   · Si el registro tiene un openingBalance FORZADO (> 0), ese manda.
+      //   · Si no (0 o sin registro), se ARRASTRA el efectivo contado del
+      //     cierre del día anterior (getFondoSugerido → countedCash de ayer).
+      //   El operador puede sobrescribir con "Forzar fondo inicial" (que
+      //   escribe openingBalance vía setOpeningBalance → pasa a ser > 0).
+      let fondoInicial = Number(registro?.openingBalance || 0);
+      if (fondoInicial <= 0) {
+        try {
+          const sug = await getFondoSugerido({ fechaISO });
+          if (sug && sug.ok) fondoInicial = Number(sug.fondoSugerido || 0);
+        } catch (e) {
+          console.warn(`${TAG} ⚠️ arrastre de fondo no disponible:`, e.message);
+        }
+      }
 
       // 2. Leer cobros en efectivo del día desde PaymentReservations
       //    tipoPago = "Efectivo" puro + parte efectivo de Mixto
@@ -395,6 +608,74 @@ export const guardarArqueo = webMethod(
       };
     } catch (error) {
       console.error(`${TAG} ❌ guardarArqueo:`, error);
+      return { ok: false, error: error.message };
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════
+// confirmarLecturaMetodo — Datáfono / Bizum  (v1.1.4)
+// ═══════════════════════════════════════════════════════
+// Confirmación HUMANA de que la lectura del datáfono (o el resumen de
+// Bizum) coincide con el informe del día. No concilia importe a importe:
+// deja constancia de que alguien lo ha comprobado y cuándo.
+// metodo: 'card' | 'bizum'
+export const confirmarLecturaMetodo = webMethod(
+  Permissions.SiteMember,
+  async ({ fechaISO, metodo, confirmado, recordedBy }) => {
+    try {
+      const tipo = String(metodo || '').toLowerCase();
+      if (!fechaISO) return { ok: false, error: 'fechaISO requerido' };
+      if (tipo !== 'card' && tipo !== 'bizum') {
+        return { ok: false, error: "metodo debe ser 'card' o 'bizum'" };
+      }
+      const valor = confirmado !== false;   // por defecto confirma
+      console.log(`${TAG} 🧾 confirmarLecturaMetodo: ${fechaISO} | ${tipo} | ${valor}`);
+
+      const { start, end } = _dayRange(fechaISO);
+      const regResult = await wixData.query(COL_REGISTER)
+        .ge('registerDate', start)
+        .le('registerDate', end)
+        .limit(1)
+        .find({ suppressAuth: true });
+
+      let registro;
+      if (regResult.items.length === 0) {
+        // Auto-crear, igual que guardarArqueo: se puede confirmar el
+        // datáfono de un día en el que nadie ha contado la caja todavía.
+        registro = await wixData.insert(COL_REGISTER, {
+          registerDate: new Date(`${fechaISO}T08:00:00.000`),
+          openingBalance: 0,
+          status: 'open'
+        }, { suppressAuth: true });
+      } else {
+        registro = regResult.items[0];
+      }
+
+      if (registro.status === 'closed') {
+        return { ok: false, error: 'La caja de este día ya está cerrada' };
+      }
+
+      // READ-MERGE-UPDATE sobre el registro completo ya leído
+      if (tipo === 'card') {
+        registro.cardConfirmed = valor;
+        registro.cardConfirmedBy = valor ? String(recordedBy || '').trim() : '';
+      } else {
+        registro.bizumConfirmed = valor;
+        registro.bizumConfirmedBy = valor ? String(recordedBy || '').trim() : '';
+      }
+
+      const updated = await wixData.update(COL_REGISTER, registro, { suppressAuth: true });
+      console.log(`${TAG} ✅ ${tipo} ${valor ? 'confirmado' : 'desconfirmado'} en ${fechaISO}`);
+
+      return {
+        ok: true,
+        metodo: tipo,
+        confirmado: valor,
+        registro: updated
+      };
+    } catch (error) {
+      console.error(`${TAG} ❌ confirmarLecturaMetodo:`, error);
       return { ok: false, error: error.message };
     }
   }

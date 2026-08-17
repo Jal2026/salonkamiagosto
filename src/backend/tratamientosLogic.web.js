@@ -1,9 +1,21 @@
 // =====================================================
 // KAMISUITE - Backend tratamientosLogic.web para Tratamientos Capilares
 // =====================================================
-// VERSION: 1.0.9-TRATAMIENTOS
-// FECHA: 9 de mayo de 2026
+// VERSION: 1.1.0-TRATAMIENTOS
+// FECHA: 26 de mayo de 2026
 // BASE: coloracionLogic v3.2.0
+//
+// CAMBIOS v1.1.0:
+// - FIX CRÍTICO: skipAvailability=true en TODAS las fases de la cascada
+//   (PRE, APLICACIÓN y POST) tanto desde web pública como desde recepción.
+//   Wix revalidaba disponibilidad en cada fase individual, provocando
+//   SLOT_NOT_AVAILABLE aleatorios en reservas online válidas.
+//   La disponibilidad ya se valida en consultarDisponibilidadUnificada;
+//   la revalidación de Wix por fase es redundante y causa race conditions.
+// - FIX: Fases PRE-aplicación ahora con await (antes fire-and-forget).
+//   El LAVADO previo se creaba sin await, podía ocupar el slot del
+//   estilista y hacer que Wix rechazara la APLICACIÓN inmediatamente
+//   después por SLOT_NOT_AVAILABLE.
 //
 // CAMBIOS v1.0.9:
 // - MIGRACIÓN A CENTRALITA DE COMUNICACIONES (mismo patrón que
@@ -75,8 +87,7 @@
 // SERVICIOS SOPORTADOS:
 // - Botox Capilar
 // - Nanoplastia
-// - Kerastase Premiere
-// =====================================================
+// - Kerastase Premiere// =====================================================
 
 import wixData from 'wix-data';
 import { webMethod, Permissions } from 'wix-web-module';
@@ -90,7 +101,9 @@ import { contacts, notifications } from 'wix-crm-backend';
 // v1.0.9: Centralita de comunicaciones
 import { notificarConfirmacion } from 'backend/comunicacionesLogic.web.js';
 
-const VERSION = '1.0.9-TRATAMIENTOS';
+const VERSION = '1.1.0-TRATAMIENTOS';
+// v1.1.0: skipAvailability=true en todas las fases + await en PRE-aplicación.
+//   Elimina SLOT_NOT_AVAILABLE por race condition entre fases de la cascada.
 // v1.0.9: Migración a centralita comunicacionesLogic. Eliminado envío directo
 //   triggeredEmails y constante EMAIL_CONFIRMACION_ID. Sin cambios funcionales
 //   en reserva — solo en cómo se entrega la confirmación al cliente.
@@ -1460,6 +1473,8 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
     if (!horaHHmm) throw new Error('horaHHmm requerido');
     if (!isGuid(empleadoId)) throw new Error('empleadoId requerido');
 
+console.warn(`${TAG} 📅 Reserva entrante: fecha=${fechaISO} hora=${horaHHmm} servicio=${publicServiceId} longitud=${payload?.longitudPelo||'M'} corte=${!!payload?.corteChecked} cliente=${payload?.contactDetails?.firstName||''} ${payload?.contactDetails?.lastName||''} tel=${payload?.contactDetails?.phone||''} origen=${payload?.origen||'?'}`);
+
     let empleadoIdReal = empleadoId;
     if (empleadoId === STAFF_IDS.CUALQUIERA) {
       const itemTemp = await getMapeoByPublicServiceId(publicServiceId);
@@ -1571,13 +1586,13 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
 
     let cursorPreAplic = madridToUTC(fechaISO, horaHHmm);
     
-    for (const fase of fasesPreAplic) {
+for (const fase of fasesPreAplic) {
       const s = cursorPreAplic;
       const e = addMinutes(s, fase.min);
-      
+     
       console.log(`${TAG} [PRE] Creando ${fase.fase}: ${fase.serviceId.substring(0,8)}... (${fase.min} min) con staff principal`);
-      
-      createAndConfirmBookingPhase({
+     
+      await createAndConfirmBookingPhase({
         serviceId: fase.serviceId,
         resourceId: empleadoIdReal,
         startISO: s,
@@ -1587,12 +1602,11 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
         price: priceMap[fase.serviceId] || 0,
         memberContactId,
         serviceInfo: serviceInfoMap[fase.serviceId],
-        skipAvailability: origenRecepcion
-      }).catch(err => console.error(`${TAG} Error ${fase.fase}:`, err.message));
-      
+        skipAvailability: true
+      });
+     
       cursorPreAplic = e;
     }
-
     const startAplic = cursorPreAplic;
     const svcAplic = await elevatedGetService(resolucion.idAplicacion);
     const duracionAplicWix = toNum(svcAplic?.schedule?.availabilityConstraints?.sessionDurations?.[0]) 
@@ -1603,7 +1617,7 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
     
     console.log(`${TAG} Creando APLICACI\u00d3N (AWAIT): ${resolucion.idAplicacion.substring(0,8)}... (${duracionAplicWix} min)`);
 
-    const bAplic = await createAndConfirmBookingPhase({
+const bAplic = await createAndConfirmBookingPhase({
       serviceId: resolucion.idAplicacion,
       resourceId: empleadoIdReal,
       startISO: startAplic,
@@ -1613,9 +1627,8 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
       price: priceMap[resolucion.idAplicacion],
       memberContactId,
       serviceInfo: serviceInfoMap[resolucion.idAplicacion],
-      skipAvailability: origenRecepcion
+      skipAvailability: true
     });
-
     console.log(`${TAG} Aplicaci\u00f3n confirmada: ${bAplic}`);
 
     let totalPrecio = priceMap[resolucion.idAplicacion] || 0;
@@ -1679,7 +1692,7 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
               price: priceMap[fase.serviceId] || 0,
               memberContactId,
               serviceInfo: serviceInfoMap[fase.serviceId],
-              skipAvailability: origenRecepcion
+              skipAvailability: true
             });
           } catch (faseErr) {
             console.error(`${TAG} Error fase POST ${fase.fase}: ${faseErr.message}`);

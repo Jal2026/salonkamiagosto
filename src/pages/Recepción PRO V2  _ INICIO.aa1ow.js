@@ -1,9 +1,181 @@
 // =====================================================
 // KAMISUITE - Page Code: Nueva Recepción PRO (CMS-first)
 // =====================================================
-// VERSION: 1.0.27
-// FECHA: 28 de junio de 2026
+// VERSION: 1.0.46
+// FECHA: 11 de agosto de 2026
+//
+// v1.0.46: 🩹 FIX handleGuardarFichaCliente — guardaba una sola
+//          anotación por pulsación. El modal de FICHA TÉCNICA tiene
+//          tres contenedores de texto (Color, Tratamiento, General) y
+//          un único botón de guardar; el widget solo enviaba el de la
+//          pestaña visible y las otras dos anotaciones se perdían sin
+//          aviso. Verificado en KamisuiteClientRecords: las filas
+//          nunca llegaron a insertarse.
+//          Ahora el handler acepta `msg.anotaciones` (array de
+//          {recordType, recordText}), las inserta una a una y responde
+//          UNA SOLA VEZ con la lista guardada y las que fallaron.
+//          Se mantiene el formato antiguo {recordType, recordText} por
+//          compatibilidad.
+//          Una sola respuesta es obligatorio, no una preferencia:
+//          `sendResponse` es un setAttribute directo sin cola FIFO, y
+//          varias respuestas en el mismo tick se sobrescriben.
+//          Solo se responde ok:false si NO entró ninguna anotación; un
+//          fallo parcial va en `fallidas` para que el widget lo diga y
+//          conserve ese borrador.
+//          Requiere widget v1.1.101. No se toca ningún otro handler,
+//          import ni case del switch.
+//
+// v1.0.45: 🧹 FUERA el circuito del histórico importado del software
+//          anterior. La FICHA TÉCNICA pasa a ser única y CMS-first
+//          (widget v1.1.99): se retiran el import de
+//          getFichaTecnicaCliente (memoriaLegacyLogic), el handler
+//          handleFichaTecnica y el case 'getFichaTecnica'.
+//          Era una fuente de un solo salón, nacida de una migración
+//          concreta, y no puede sostener una pantalla del producto.
+//          SE CONSERVA handleFtBuscarCliente y su case: es el buscador
+//          de cliente sobre `cacheContactos`, y ahora alimenta el
+//          buscador del modal único. Nada que ver con el histórico.
+//          `memoriaLegacyLogic` no se toca: sigue sirviendo al módulo
+//          MEMORIA, que es su sitio.
 // ARCHIVO: page code de la página de la NUEVA Recepción PRO
+//
+// v1.0.44: 📋 FICHA DEL CLIENTE en el modal de la cita (widget v1.1.97).
+//          Tres puentes nuevos hacia el backend NUEVO
+//          `clientRecordsLogic.web` v1.0.0, que sustituye a los campos
+//          personalizados de Wix Contacts como fuente de las notas de
+//          COLOR, TRATAMIENTO y generales (decisión Jal 10-ago-2026):
+//            'getFichaClienteRecords' → 'fichaClienteRecords'
+//            'guardarFichaCliente'    → 'fichaClienteGuardada'
+//            'quitarFichaCliente'     → 'fichaClienteQuitada'
+//          La anotación se firma con el empleado logueado
+//          (`_empleadoActivo.staffName`), igual que `soldBy` en el cobro
+//          desde v1.0.42. Sin capa de acceso activa va vacío.
+//          NO se añade entrada a LOG_EVENT_MAP: la autoría ya queda
+//          grabada en la propia fila del CMS (campo `author`), y
+//          `ficha_cliente` no está en VALID_EVENTS de
+//          recepcionAccessLogic — mapearla generaría un log rechazado.
+//          Cambio ADITIVO: ningún handler, import ni contrato existente
+//          se toca. El popup FICHA TÉCNICA de la barra superior y su
+//          backend memoriaLegacyLogic quedan exactamente igual.
+//
+// v1.0.43: 📅 Observatorio semanal + confirmación de datáfono/Bizum.
+//          · `cierre-dia` llama además a obtenerObservatorioSemanal
+//            (cierreLogicExtendido v1.1.8) dentro del mismo Promise.all,
+//            así que no añade una vuelta extra: viaja en `data.observatorio`.
+//          · NEW puente `caja-confirmar-metodo` → confirmarLecturaMetodo
+//            (cashRegisterLogic v1.1.4), responde 'caja-metodo-confirmado'.
+//            Firma con el empleado logueado, igual que los movimientos.
+// v1.0.42: 👤 `soldBy` también en el COBRO de la cita. El informe agrupaba
+//          "Cobrado por staff" por el titular de la cita — la columna del
+//          calendario — cuando lo que se quiere saber es quién estaba en
+//          recepción pasando el cobro. Se manda `_empleadoActivo.staffName`
+//          a marcarPagadoReserva (v1.0.48). Sin capa de acceso activa va
+//          vacío y el informe lo agrupa entero bajo "Administrador".
+// v1.0.41: 🧾 `soldBy` en la venta de productos desde la agenda. La venta
+//          se registraba en PaymentReservations con staff='TIENDA', que es
+//          un discriminador de tipo y no una persona: el informe del día no
+//          podía decir quién despachó. Ahora se envía el empleado logueado
+//          (`_empleadoActivo.staffName`, el mismo que ya firma los
+//          movimientos de caja desde v1.0.22). Sin login se manda vacío y
+//          el informe lo pinta como "Administrador". Requiere
+//          tiendaProductos v1.5.13 y el campo CMS `soldBy`.
+// v1.0.40: ⚖️ Puente `set-line-weight` → setLineWeight (recepcionProLogic
+//          v1.0.46). Cobro por peso desde el modal de la cita: el widget
+//          v1.1.90 manda los GRAMOS de una línea y el backend calcula el
+//          importe con el precioGramo de ServiceCatalog. Responde
+//          'line-weight-set'. + import, + handler, + case, + entrada en
+//          LOG_EVENT_MAP ('cambio_reserva'). Cambio ADITIVO: ningún
+//          handler ni contrato de mensaje existente se toca.
+// v1.0.39: 📐 Puente `extender-fase` → extenderFase (recepcionProLogic
+//          v1.0.45). Devuelve al asa de resize la EXTENSIÓN RAYADA, ahora
+//          en cualquier fase y no solo al final de la cita. Responde
+//          'fase-extendida'. + import, + handler, + case, + entrada en
+//          LOG_EVENT_MAP. El puente 'redimensionar-fase' se conserva.
+// v1.0.38: 🧾 DOCUMENTOS DE VENTAS SIN CITA (botón TIENDA del widget
+//          v1.1.85). Import de generarTicketVenta, generarFacturaVenta y
+//          obtenerDocumentoVenta de facturacionSalonLogic v1.0.4, con tres
+//          handlers y tres cases nuevos:
+//            'generarTicketVenta'   → 'ticketVentaGenerado'
+//            'generarFacturaVenta'  → 'facturaVentaGenerada'
+//            'obtenerDocumentoVenta'→ 'documentoVenta'
+//          La clave es `sourceKey` (bookingId del cobro en
+//          PaymentReservations = orderId de la venta). Cambio ADITIVO:
+//          los tres handlers de facturación de citas no se tocan.
+// v1.0.37: 🎚️ handleAgregarComplemento propaga `varianteSel` al backend
+//          agregarComplementoReserva v1.0.44. Mismo motivo que en v1.0.36
+//          con los servicios: sin ese campo, un complemento con variantes
+//          se añadía siempre a precio y duración base. Campo opcional.
+// v1.0.36: 🎚️ handleAgregarServicio propaga `varianteSel` y
+//          `complementosSetupUid` al backend agregarServicioReserva
+//          v1.0.43. Sin esos dos campos el servicio añadido entraba
+//          siempre a precio/duración BASE, y los servicios con fases
+//          obligatorias con variantes (CASO B) no se podían añadir.
+//          Es el único cambio funcional: el resto de handlers, cases y
+//          contratos de mensaje quedan intactos. Ambos campos son
+//          opcionales — un widget antiguo que no los mande sigue
+//          funcionando exactamente igual que antes.
+//          También se sincroniza la constante TAG, que venía rezagada
+//          en v1.0.35 respecto a la cabecera.
+// v1.0.34: + POPUP ALMACÉN (widget v1.1.76). Import de listarConsumibles,
+//          tirarPapelera y registrarMovimiento (con alias
+//          registrarMovimientoStock, porque registrarMovimiento ya está
+//          ocupado por los movimientos de CAJA de cashRegisterLogic) de
+//          stockLogic.web v1.0.2.
+//          Tres handlers y tres cases nuevos:
+//            'getAlmacenConsumibles' → 'almacenData'
+//            'almacenPapelera'       → 'almacenAccion'  (bote terminado)
+//            'almacenSacar'          → 'almacenAccion'  (APERTURA_MANUAL)
+//          Ninguna de las dos acciones relee la lista: el widget se
+//          actualiza con los contadores que devuelve el backend.
+//          Cambio ADITIVO: no se toca ningún handler existente.
+// v1.0.33: + Fondo inicial EDITABLE desde el arqueo. Import
+//          setOpeningBalance de cashRegisterLogic v1.1.1. Handler
+//          handleCajaSetFondo (mensaje 'caja-set-fondo' → responde
+//          'caja-fondo-guardado'). Fija openingBalance del día exista o
+//          no la caja. Sin campos nuevos en el CMS. + 1 case.
+//
+// v1.0.32: + APERTURA DE CAJA (fondo inicial del día). Imports abrirCaja
+//          y getFondoSugerido de cashRegisterLogic v1.1.0. Nuevos handlers:
+//            · handleCheckApertura — lee SalonConfig.arqueoActivo; si el
+//              módulo está activo y no hay caja hoy, responde
+//              'caja-fondo-sugerido' con el fondo sugerido (fondo fijo del
+//              salón / cierre de ayer / 0). Si no, 'apertura-estado'.
+//            · handleAbrirCaja — llama abrirCaja con firma automática del
+//              empleado logueado (recordedBy). Responde 'caja-abierta'.
+//          + 2 cases nuevos ('check-apertura-caja', 'caja-abrir') y entrada
+//          'caja-abrir' → 'apertura_caja' en LOG_EVENT_MAP.
+//
+// v1.0.31: + ESPECIALES. Enganche del modal de venta manual (PRIME / Bonos /
+//          Tarjetas) con especialesVentaLogic. Nuevos handlers:
+//            · espBuscarCliente / espCrearCliente — selector de cliente del
+//              modal, reutilizan cacheContactos + crearContacto con canal
+//              propio para no colisionar con la búsqueda del aside.
+//            · getEspecialesData — config PRIME + servicios con bono +
+//              campañas de tarjeta vigentes.
+//            · emitirBono / emitirPrime / emitirTarjeta — emiten y cobran.
+//          + imports especialesVentaLogic + productosKamisuiteLogic. + 6 cases.
+//
+// v1.0.30: + Puente redimensionar-fase. Nuevo handler handleRedimensionarFase
+//          que llama a redimensionarFase (recepcionProLogic v1.0.39) y
+//          responde al widget con 'fase-redimensionada'. Permite ajustar la
+//          duración de cualquier fase ocupante de la cascada (el backend
+//          desplaza las posteriores). + import redimensionarFase, + case
+//          'redimensionar-fase' en el switch, + entrada en LOG_EVENT_MAP.
+//          Puramente aditivo: cero cambios en el resto del page code.
+//
+// v1.0.29: + Puente salonNombres. Nuevo handler handleSalonNombres que
+//          llama al backend existente getSalonConfig (salonConfigLogic.web,
+//          NO se toca) y responde al widget con { brandName, legalName }
+//          para las cabeceras del texto copiable del informe del día.
+//          + import getSalonConfig, + case 'salonNombres' en el switch.
+//          Puramente aditivo: cero cambios en el resto del page code.
+//
+// v1.0.28: Cierre de externos V2. handleCierreDia añade la llamada al
+//          backend dedicado cierreExternosLogic.obtenerDatosCierreExternos
+//          (lee PagoreservasExternos + cruza ExternalServices) al
+//          Promise.all y transporta su resultado al widget en
+//          data.externosV2. Cero cambios en las otras 5 llamadas ni en
+//          el resto del page code.
 //
 // v1.0.27: 🧾 FACTURACIÓN — bridge a facturacionSalonLogic.web v1.0.1.
 //          Tres handlers nuevos que envuelven literalmente las 3
@@ -345,6 +517,9 @@ import {
   agregarServicioReserva,
   quitarItemReserva,
   moverFase,
+  redimensionarFase,
+  extenderFase,   // v1.0.39 — extensión rayada por fase
+  setLineWeight,  // v1.0.40 — cobro por peso (gramos) desde el modal de cita
   // v1.0.17 — bloqueos persistentes
   crearBloqueo,
   eliminarBloqueo,
@@ -362,13 +537,22 @@ import { listarProductos, venderProductosDesdeAgenda } from 'backend/tiendaProdu
 // Clientes: reutiliza el backend que ya usa la agenda legacy (CRM en memoria).
 import { cargarTodosContactos, crearContacto, editarContacto } from 'backend/recepcionLogic.web';
 
-// Arqueo de caja: backend existente (gemelo en KALONICE). No se modifica.
+// v1.0.31 — ESPECIALES: venta manual de PRIME / Bonos / Tarjetas.
+import { emitirBonoManual, emitirPrimeManual, emitirTarjetaManual } from 'backend/especialesVentaLogic.web';
+import { getProductosConfig, listarServiciosConBono, listarPromoCampaigns } from 'backend/productosKamisuiteLogic.web';
+
+// Arqueo de caja: backend cashRegisterLogic. v1.1.0 añade getFondoSugerido
+// y expone abrirCaja para el flujo de APERTURA de caja (fondo inicial).
 import {
   calcularEfectivoEsperado,
   guardarArqueo,
   cerrarCaja,
   registrarMovimiento,
-  getCajaDia
+  getCajaDia,
+  getFondoSugerido,
+  abrirCaja,
+  setOpeningBalance,
+  confirmarLecturaMetodo          // v1.0.43 — datáfono / Bizum
 } from 'backend/cashRegisterLogic.web';
 
 // v1.0.5 — Cierre del día (panel inferior). Backends existentes, NO modificados.
@@ -378,8 +562,14 @@ import {
 } from 'backend/testCheckout.web';
 
 import {
-  obtenerDatosCierreExtendidos
+  obtenerDatosCierreExtendidos,
+  obtenerObservatorioSemanal      // v1.0.43 — semana lunes→domingo
 } from 'backend/cierreLogicExtendido.web';
+
+// v1.0.28 — Cierre de externos V2 (backend dedicado, lee PagoreservasExternos).
+import {
+  obtenerDatosCierreExternos
+} from 'backend/cierreExternosLogic.web';
 
 // v1.0.20 — Capa de acceso + log de actividad (opcional por salón).
 import {
@@ -396,10 +586,39 @@ import {
 import {
   obtenerDocumentoReserva,
   generarTicketCita,
-  generarFacturaCita
+  generarFacturaCita,
+  // v1.0.38 — documentos de ventas sin cita (TIENDA)
+  generarTicketVenta,
+  generarFacturaVenta,
+  obtenerDocumentoVenta
 } from 'backend/facturacionSalonLogic.web';
 
-const TAG = '[RecepcionProCMS v1.0.27]';
+// v1.0.29 — Nombres del salón (brandName / legalName) para las cabeceras
+// del texto que se copia desde el informe del día. Backend getSalonConfig
+// existente en salonConfigLogic.web.js (Permissions.SiteMember). NO se toca.
+import { getSalonConfig } from 'backend/salonConfigLogic.web';
+
+// v1.0.34 — Almacén de uso en salón (popup de la papelera)
+// OJO: registrarMovimiento ya está importado de cashRegisterLogic para
+// los movimientos de CAJA. Aquí se trae con alias para no colisionar ni
+// tocar nada de lo existente.
+import {
+  listarConsumibles,
+  tirarPapelera,
+  registrarMovimiento as registrarMovimientoStock
+} from 'backend/stockLogic.web';
+
+// v1.0.44 — FICHA DEL CLIENTE (CMS-first, KamisuiteClientRecords).
+// Backend NUEVO y aditivo: no toca recepcionProLogic (motor compartido),
+// ni fichaClienteLogic, ni clienteAreaLogic. Los tres nombres se han
+// comprobado contra el resto de imports de este archivo: no colisionan.
+import {
+  getFichaClienteRecords,
+  guardarFichaClienteRecord,
+  desactivarFichaClienteRecord
+} from 'backend/clientRecordsLogic.web';
+
+const TAG = '[RecepcionProCMS v1.0.46]';
 
 // ID del Custom Element en la página (ajustar al ID real del editor Wix).
 const ELEMENT_ID = '#recepcionProCMS';
@@ -434,11 +653,17 @@ const LOG_EVENT_MAP = {
   'agregar-servicio':      'cambio_reserva',
   'quitar-item':           'cambio_reserva',
   'mover-fase':            'cambio_reserva',
+  'redimensionar-fase':    'cambio_reserva',
+  'extender-fase':         'cambio_reserva',
+  'set-line-weight':       'cambio_reserva',
   // cobros
   'pagarReserva':          'cobro',
   'vender-productos-cita': 'cobro',
   // acceso a arqueo de caja
   'caja-calcular':         'acceso_arqueo',
+  // v1.0.32 — apertura de caja (fondo inicial del día)
+  'caja-abrir':            'apertura_caja',
+  'caja-confirmar-metodo': 'acceso_arqueo',
   // acceso a informe / cierre del día
   'cierre-dia':            'acceso_informe'
 };
@@ -470,6 +695,300 @@ function sendResponse(type, data = {}) {
     _el.setAttribute('response', JSON.stringify(payload));
   } catch (e) {
     console.error(`${TAG} ❌ setAttribute response falló:`, e);
+  }
+}
+
+// =====================================================
+// ESPECIALES — Venta manual de PRIME · Bonos · Tarjetas (v1.0.31)
+// =====================================================
+// Enganche del modal ESPECIALES del widget con especialesVentaLogic.
+// El selector de cliente reutiliza cacheContactos + crearContacto, pero
+// con mensajes propios (espBuscarCliente/espCrearCliente) para no pisar la
+// búsqueda de clientes del aside (buscarCliente/clientesEncontrados).
+
+// Búsqueda de cliente para el modal (misma lógica que handleBuscarCliente,
+// respuesta por canal propio 'espClientesEncontrados').
+function handleEspBuscarCliente(msg) {
+  const searchTerm = String(msg.query || '').trim().toLowerCase();
+  if (searchTerm.length < 2) { sendResponse('espClientesEncontrados', { clientes: [] }); return; }
+  const searchPhone = searchTerm.replace(/[\s\-\(\)]/g, '');
+  const filtered = cacheContactos.filter(c => {
+    const nombre = (c.nombreCompleto || '').toLowerCase();
+    const email = (c.email || '').toLowerCase();
+    const telefono = (c.telefono || '').replace(/[\s\-\(\)]/g, '');
+    return nombre.includes(searchTerm) || email.includes(searchTerm) || telefono.includes(searchPhone);
+  });
+  const limitados = filtered.slice(0, 20);
+  sendResponse('espClientesEncontrados', {
+    clientes: limitados,
+    totalEncontrados: filtered.length,
+    mostrados: limitados.length
+  });
+}
+
+// Alta de cliente nuevo desde el modal ESPECIALES.
+async function handleEspCrearCliente(msg) {
+  try {
+    const result = await crearContacto({
+      nombre: msg.nombre, apellido: msg.apellido,
+      telefono: msg.telefono, email: msg.email
+    });
+    if (result.ok && result.cliente) cacheContactos.push(result.cliente);
+    sendResponse('espClienteCreado', { data: result });
+  } catch (e) {
+    console.error(`${TAG} ❌ espCrearCliente:`, e);
+    sendResponse('espClienteCreado', { data: { ok: false, error: { message: e?.message || 'Error' } } });
+  }
+}
+
+// Datos para poblar el modal: config PRIME (precio) + servicios con bono +
+// campañas de tarjeta VIGENTES (active + ventana startDate/endDate).
+async function handleGetEspecialesData() {
+  try {
+    const [rCfg, rBonos, rCamp] = await Promise.all([
+      getProductosConfig(),
+      listarServiciosConBono(),
+      listarPromoCampaigns()
+    ]);
+    const ahora = Date.now();
+    const campaignsVigentes = (((rCamp && rCamp.success) ? rCamp.campaigns : []) || []).filter(c => {
+      if (c.active !== true) return false;
+      if (c.startDate && new Date(c.startDate).getTime() > ahora) return false;
+      if (c.endDate && new Date(c.endDate).getTime() < ahora) return false;
+      return true;
+    });
+    sendResponse('especialesData', {
+      config: (rCfg && rCfg.success) ? rCfg.config : null,
+      servicios: (rBonos && rBonos.success) ? rBonos.servicios : [],
+      campaigns: campaignsVigentes
+    });
+  } catch (e) {
+    console.error(`${TAG} ❌ getEspecialesData:`, e);
+    sendResponse('especialesData', { config: null, servicios: [], campaigns: [], error: e?.message || 'Error' });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// v1.0.45 — Buscador de cliente de la FICHA TÉCNICA
+// ═══════════════════════════════════════════════════════════
+// Alimenta el buscador del modal único de FICHA TÉCNICA cuando se abre
+// desde la barra superior y no hay cliente que heredar.
+//
+// El buscador usa cacheContactos con canal propio
+// (ftBuscarCliente/ftClientesEncontrados) para no pisar ni la búsqueda
+// del aside (buscarCliente) ni la de ESPECIALES (espBuscarCliente).
+
+function handleFtBuscarCliente(msg) {
+  const searchTerm = String(msg.query || '').trim().toLowerCase();
+  if (searchTerm.length < 2) { sendResponse('ftClientesEncontrados', { clientes: [] }); return; }
+  const searchPhone = searchTerm.replace(/[\s\-\(\)]/g, '');
+  const filtered = cacheContactos.filter(c => {
+    const nombre = (c.nombreCompleto || '').toLowerCase();
+    const telefono = (c.telefono || '').replace(/[\s\-\(\)]/g, '');
+    return nombre.includes(searchTerm) || telefono.includes(searchPhone);
+  });
+  const limitados = filtered.slice(0, 20);
+  sendResponse('ftClientesEncontrados', {
+    clientes: limitados,
+    totalEncontrados: filtered.length,
+    mostrados: limitados.length
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
+// v1.0.44 — FICHA DEL CLIENTE (popup del modal de la cita)
+// ═══════════════════════════════════════════════════════════
+// Fuente CMS-first: KamisuiteClientRecords, vía clientRecordsLogic
+// v1.0.0. Sustituye a los campos personalizados de Wix Contacts.
+//
+// Canal propio (getFichaClienteRecords / guardarFichaCliente /
+// quitarFichaCliente) para no pisar el del popup FICHA TÉCNICA de la
+// barra superior, que sigue leyendo el histórico legacy y no se toca.
+//
+// ⚠️ SIN DATOS ECONÓMICOS en las últimas visitas: el filtro vive en el
+// backend, que descarta el precio de cada línea de serviciosDetail
+// antes de responder. Aquí no hay nada que ocultar porque nada llega.
+
+async function handleGetFichaCliente(msg) {
+  try {
+    const data = await getFichaClienteRecords({
+      contactId:        msg.contactId || '',
+      clientName:       msg.clientName || '',
+      clientPhone:      msg.clientPhone || '',
+      excluirReservaId: msg.reservaId || ''
+    });
+    sendResponse('fichaClienteRecords', { data, contactId: msg.contactId || '' });
+  } catch (e) {
+    console.error(`${TAG} ❌ getFichaClienteRecords:`, e);
+    sendResponse('fichaClienteRecords', {
+      data: { ok: false, error: { message: e?.message || 'Error' }, anotaciones: [], visitas: [], mensajeCliente: [] },
+      contactId: msg.contactId || ''
+    });
+  }
+}
+
+// v1.0.46 — Guarda TODAS las anotaciones que el widget mande en una
+// sola pulsación. El widget envía `anotaciones: [{recordType,
+// recordText}]`; se admite el formato antiguo de una sola por
+// compatibilidad. Se responde UNA VEZ con la lista: `sendResponse` es
+// un setAttribute directo, sin cola, y varias respuestas en el mismo
+// tick se pisan entre sí.
+async function handleGuardarFichaCliente(msg) {
+  const lista = Array.isArray(msg.anotaciones) && msg.anotaciones.length
+    ? msg.anotaciones
+    : [{ recordType: msg.recordType || 'GENERAL', recordText: msg.recordText || '' }];
+
+  const guardadas = [];
+  const fallidas = [];
+
+  try {
+    for (const item of lista) {
+      const tipo  = (item && item.recordType) || 'GENERAL';
+      const texto = String((item && item.recordText) || '').trim();
+      if (!texto) continue;
+
+      try {
+        const data = await guardarFichaClienteRecord({
+          contactId:   msg.contactId || '',
+          clientName:  msg.clientName || '',
+          clientPhone: msg.clientPhone || '',
+          recordType:  tipo,
+          recordText:  texto,
+          bookingId:   msg.reservaId || '',
+          source:      'RECEPCION',
+          // Firma con el empleado logueado, igual que `soldBy` en el cobro
+          // (v1.0.42). Sin capa de acceso activa va vacío y el CMS lo guarda
+          // sin autor, que es la verdad: no había nadie identificado.
+          author: (_empleadoActivo && _empleadoActivo.staffName) || ''
+        });
+
+        if (data && data.ok && data.anotacion) guardadas.push(data.anotacion);
+        else fallidas.push({ tipo, message: data?.error?.message || 'Error' });
+
+      } catch (eItem) {
+        console.error(`${TAG} ❌ guardarFichaCliente ${tipo}:`, eItem);
+        fallidas.push({ tipo, message: eItem?.message || 'Error' });
+      }
+    }
+
+    // Solo es un fallo global si no entró ninguna.
+    const ok = guardadas.length > 0;
+
+    sendResponse('fichaClienteGuardada', {
+      data: {
+        ok,
+        anotaciones: guardadas,
+        fallidas,
+        error: ok ? undefined : { message: fallidas[0]?.message || 'No se guardó ninguna anotación' }
+      },
+      recordType: guardadas[0]?.tipo || lista[0]?.recordType || 'GENERAL'
+    });
+
+  } catch (e) {
+    console.error(`${TAG} ❌ guardarFichaCliente:`, e);
+    sendResponse('fichaClienteGuardada', {
+      data: { ok: false, error: { message: e?.message || 'Error' }, anotaciones: [], fallidas },
+      recordType: lista[0]?.recordType || 'GENERAL'
+    });
+  }
+}
+
+async function handleQuitarFichaCliente(msg) {
+  try {
+    const data = await desactivarFichaClienteRecord({ recordId: msg.recordId || '' });
+    sendResponse('fichaClienteQuitada', { data, recordId: msg.recordId || '' });
+  } catch (e) {
+    console.error(`${TAG} ❌ quitarFichaCliente:`, e);
+    sendResponse('fichaClienteQuitada', {
+      data: { ok: false, error: { message: e?.message || 'Error' } },
+      recordId: msg.recordId || ''
+    });
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// v1.0.34 — ALMACÉN (popup de consumo en la barra superior)
+// ═══════════════════════════════════════════════════════════
+
+async function handleAlmacenConsumibles() {
+  try {
+    const r = await listarConsumibles();
+    sendResponse('almacenData', {
+      productos: (r && r.ok) ? (r.productos || []) : [],
+      error: (r && r.ok) ? null : (r?.error || 'No se pudo leer el almacén')
+    });
+  } catch (e) {
+    console.error(`${TAG} ❌ almacenConsumibles:`, e);
+    sendResponse('almacenData', { productos: [], error: e?.message || 'Error' });
+  }
+}
+
+// Bote terminado: el almacén descuenta uno cerrado y abre el siguiente.
+async function handleAlmacenPapelera(msg) {
+  const payload = msg.payload || {};
+  try {
+    const data = await tirarPapelera(payload);
+    sendResponse('almacenAccion', { data, productId: payload.productId });
+  } catch (e) {
+    console.error(`${TAG} ❌ almacenPapelera:`, e);
+    sendResponse('almacenAccion', {
+      data: { ok: false, productId: payload.productId, error: e?.message || 'Error' },
+      productId: payload.productId
+    });
+  }
+}
+
+// Sacar un bote del almacén para empezarlo, sin tirar ninguno.
+// Es un movimiento APERTURA · APERTURA_MANUAL: el total no cambia,
+// una unidad pasa de cerrada a en uso.
+async function handleAlmacenSacar(msg) {
+  const payload = msg.payload || {};
+  try {
+    const data = await registrarMovimientoStock({
+      productId: payload.productId,
+      moveType: 'APERTURA',
+      reason: 'APERTURA_MANUAL',
+      quantity: 1,
+      staffId: payload.staffId || '',
+      staffName: payload.staffName || ''
+    });
+    sendResponse('almacenAccion', { data, productId: payload.productId });
+  } catch (e) {
+    console.error(`${TAG} ❌ almacenSacar:`, e);
+    sendResponse('almacenAccion', {
+      data: { ok: false, productId: payload.productId, error: e?.message || 'Error' },
+      productId: payload.productId
+    });
+  }
+}
+
+async function handleEmitirBono(msg) {
+  try {
+    const data = await emitirBonoManual(msg.payload || {});
+    sendResponse('bonoEmitido', { data });
+  } catch (e) {
+    console.error(`${TAG} ❌ emitirBono:`, e);
+    sendResponse('bonoEmitido', { data: { success: false, error: e?.message || 'Error' } });
+  }
+}
+
+async function handleEmitirPrime(msg) {
+  try {
+    const data = await emitirPrimeManual(msg.payload || {});
+    sendResponse('primeEmitido', { data });
+  } catch (e) {
+    console.error(`${TAG} ❌ emitirPrime:`, e);
+    sendResponse('primeEmitido', { data: { success: false, error: e?.message || 'Error' } });
+  }
+}
+
+async function handleEmitirTarjeta(msg) {
+  try {
+    const data = await emitirTarjetaManual(msg.payload || {});
+    sendResponse('tarjetaEmitido', { data });
+  } catch (e) {
+    console.error(`${TAG} ❌ emitirTarjeta:`, e);
+    sendResponse('tarjetaEmitido', { data: { success: false, error: e?.message || 'Error' } });
   }
 }
 
@@ -524,7 +1043,10 @@ async function handlePagarReserva(msg) {
       metodoPago: msg.metodoPago,
       desglosemetodopago: msg.desglosemetodopago,
       importeNeto: msg.importeNeto,           // v1.0.6 — neto ya descontado
-      descripcionExtra: msg.descripcionExtra  // v1.0.6 — token 🏷️ Descuento
+      descripcionExtra: msg.descripcionExtra, // v1.0.6 — token 🏷️ Descuento
+      // v1.0.42 — quién cobra. Vacío si el salón trabaja sin login: el
+      // informe lo agrupa como "Administrador".
+      soldBy: (_empleadoActivo && _empleadoActivo.staffName) || ''
     });
     sendResponse('reservaPagada', result);
   } catch (e) {
@@ -633,6 +1155,42 @@ async function handleGenerarFactura(msg) {
   } catch (e) {
     console.error(`${TAG} ❌ generarFactura:`, e);
     sendResponse('facturaGenerada', { ok: false, error: { message: e?.message || 'Error' } });
+  }
+}
+
+// v1.0.38 — Documentos de una VENTA sin cita. `sourceKey` es el bookingId
+// con el que quedó registrado el cobro en PaymentReservations.
+async function handleGenerarTicketVenta(msg) {
+  try {
+    const result = await generarTicketVenta({ sourceKey: msg.sourceKey });
+    sendResponse('ticketVentaGenerado', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ generarTicketVenta:`, e);
+    sendResponse('ticketVentaGenerado', { ok: false, error: { message: e?.message || 'Error' } });
+  }
+}
+
+async function handleGenerarFacturaVenta(msg) {
+  try {
+    const result = await generarFacturaVenta({
+      sourceKey: msg.sourceKey,
+      vatId: msg.vatId,
+      legalName: msg.legalName
+    });
+    sendResponse('facturaVentaGenerada', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ generarFacturaVenta:`, e);
+    sendResponse('facturaVentaGenerada', { ok: false, error: { message: e?.message || 'Error' } });
+  }
+}
+
+async function handleObtenerDocumentoVenta(msg) {
+  try {
+    const result = await obtenerDocumentoVenta({ sourceKey: msg.sourceKey });
+    sendResponse('documentoVenta', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ obtenerDocumentoVenta:`, e);
+    sendResponse('documentoVenta', { ok: false, error: { message: e?.message || 'Error' } });
   }
 }
 
@@ -804,11 +1362,94 @@ async function handleCajaCerrar(msg) {
   } catch (e) { sendResponse('caja-cerrada', { ok: false, error: e.message }); }
 }
 
+// v1.0.43 — Confirmación de que la lectura del datáfono / el resumen de
+// Bizum coincide con el informe del día. Firma con el empleado logueado.
+async function handleCajaConfirmarMetodo(msg) {
+  try {
+    const recordedBy = (_empleadoActivo && _empleadoActivo.staffName) || msg.recordedBy || '';
+    const result = await confirmarLecturaMetodo({
+      fechaISO: msg.fechaISO,
+      metodo: msg.metodo,
+      confirmado: msg.confirmado !== false,
+      recordedBy
+    });
+    sendResponse('caja-metodo-confirmado', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ caja-confirmar-metodo:`, e);
+    sendResponse('caja-metodo-confirmado', { ok: false, error: e.message });
+  }
+}
+
 async function handleCajaMovimiento(msg) {
   try {
     const result = await registrarMovimiento({ fechaISO: msg.fechaISO, movementType: msg.movementType, amount: msg.amount, description: msg.description || '', recordedBy: msg.recordedBy || '', registerId: msg.registerId || '' });
     sendResponse('caja-movimiento-ok', result);
   } catch (e) { sendResponse('caja-movimiento-ok', { ok: false, error: e.message }); }
+}
+
+// =====================================================
+// APERTURA DE CAJA (fondo inicial del día)  v1.0.32
+//   El arqueo es un MÓDULO OPCIONAL. handleCheckApertura decide, leyendo
+//   SalonConfig.arqueoActivo, si el widget debe ofrecer la apertura:
+//     - arqueoActivo !== true            → 'apertura-estado' { activo:false }
+//     - activo pero ya hay caja hoy      → 'apertura-estado' { activo:true, hayCaja:true }
+//     - activo y sin caja hoy            → 'caja-fondo-sugerido' { fondoSugerido, origen, fechaOrigen }
+//   El flag se comprueba en el backend/page code; el widget solo reacciona.
+// =====================================================
+
+async function handleCheckApertura(msg) {
+  try {
+    const cfgRes = await getSalonConfig();
+    const arqueoActivo = !!(cfgRes && cfgRes.ok && cfgRes.config && cfgRes.config.arqueoActivo === true);
+    if (!arqueoActivo) { sendResponse('apertura-estado', { activo: false }); return; }
+
+    const caja = await getCajaDia({ fechaISO: msg.fechaISO });
+    if (caja && caja.registro) { sendResponse('apertura-estado', { activo: true, hayCaja: true }); return; }
+
+    const sug = await getFondoSugerido({ fechaISO: msg.fechaISO });
+    sendResponse('caja-fondo-sugerido', {
+      fechaISO: msg.fechaISO,
+      fondoSugerido: sug && sug.ok ? Number(sug.fondoSugerido || 0) : 0,
+      origen: sug && sug.origen ? sug.origen : 'cero',
+      fechaOrigen: sug && sug.fechaOrigen ? sug.fechaOrigen : ''
+    });
+  } catch (e) {
+    console.error(`${TAG} ❌ check-apertura-caja:`, e);
+    sendResponse('apertura-estado', { activo: false, error: e.message });
+  }
+}
+
+async function handleAbrirCaja(msg) {
+  try {
+    // Firma automática con el empleado logueado (patrón v1.0.22). Si no hay
+    // capa de acceso activa, cae al recordedBy que mande el widget (vacío ok).
+    const recordedBy = (_empleadoActivo && _empleadoActivo.staffName) || msg.recordedBy || '';
+    const result = await abrirCaja({
+      fechaISO: msg.fechaISO,
+      openingBalance: Number(msg.openingBalance || 0),
+      recordedBy
+    });
+    sendResponse('caja-abierta', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ caja-abrir:`, e);
+    sendResponse('caja-abierta', { ok: false, error: e.message });
+  }
+}
+
+// v1.0.33 — Fija el fondo inicial del día desde el arqueo (exista o no la
+// caja). Usa setOpeningBalance (openingBalance de CashRegister). Sin campos
+// nuevos en el CMS.
+async function handleCajaSetFondo(msg) {
+  try {
+    const result = await setOpeningBalance({
+      fechaISO: msg.fechaISO,
+      openingBalance: Number(msg.openingBalance || 0)
+    });
+    sendResponse('caja-fondo-guardado', result);
+  } catch (e) {
+    console.error(`${TAG} ❌ caja-set-fondo:`, e);
+    sendResponse('caja-fondo-guardado', { ok: false, error: e.message });
+  }
 }
 
 // =====================================================
@@ -825,12 +1466,14 @@ async function handleCierreDia(msg) {
   const fechaISO = msg.fechaISO;
   if (!fechaISO) { sendResponse('cierre-data', { fecha: '', data: { error: 'Falta fechaISO' } }); return; }
   try {
-    const [dia, pagos, extendido, esp, caja] = await Promise.all([
+    const [dia, pagos, extendido, esp, caja, externosV2, observatorio] = await Promise.all([
       obtenerDatosCierreDia({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' })),
       obtenerPagos({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' })),
       obtenerDatosCierreExtendidos({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' })),
       calcularEfectivoEsperado({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' })),
-      getCajaDia({ fechaISO }).catch(e => ({ registro: null }))
+      getCajaDia({ fechaISO }).catch(e => ({ registro: null })),
+      obtenerDatosCierreExternos({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' })),
+      obtenerObservatorioSemanal({ fechaISO }).catch(e => ({ ok: false, error: e?.message || 'err' }))
     ]);
     // Construcción del bloque 'arqueo' (solo lectura)
     let arqueo = null;
@@ -861,8 +1504,10 @@ async function handleCierreDia(msg) {
         pagos: pagosList,
         cierreDia: dia && dia.ok ? dia : (dia || {}),
         extendido: extendido && extendido.ok ? extendido : (extendido || {}),
+        externosV2: externosV2 && externosV2.ok ? (externosV2.externos || null) : null,
         financiero,
-        arqueo
+        arqueo,
+        observatorio: observatorio && observatorio.ok ? observatorio : null   // v1.0.43
       }
     });
   } catch (e) {
@@ -1061,6 +1706,46 @@ async function handleMoverFase(msg) {
   }
 }
 
+// v1.0.30 — redimensionar la duración de una fase (empuja las posteriores)
+// v1.0.39 — extensión rayada de UNA fase concreta. extMin = 0 la quita.
+async function handleExtenderFase(msg) {
+  try {
+    const r = await extenderFase({
+      reservaId: msg.reservaId,
+      faseIndex: msg.faseIndex,
+      extMin: msg.extMin
+    });
+    sendResponse('fase-extendida', r);
+  } catch (e) {
+    console.error(`${TAG} ❌ extender-fase:`, e);
+    sendResponse('fase-extendida', { ok: false, error: e?.message || 'Error' });
+  }
+}
+
+async function handleRedimensionarFase(msg) {
+  try {
+    const { reservaId, faseIndex, nuevaDur } = msg || {};
+    const r = await redimensionarFase({ reservaId, faseIndex, nuevaDur });
+    sendResponse('fase-redimensionada', r);
+  } catch (e) {
+    console.error(`${TAG} ❌ redimensionar-fase:`, e);
+    sendResponse('fase-redimensionada', { ok: false, error: e?.message || 'Error' });
+  }
+}
+
+// v1.0.40 — Cobro por peso. El widget manda GRAMOS (nunca euros): el
+// importe lo calcula el backend con el precioGramo de ServiceCatalog.
+async function handleSetLineWeight(msg) {
+  try {
+    const { reservaId, itemIndex, grams } = msg || {};
+    const r = await setLineWeight({ reservaId, itemIndex, grams });
+    sendResponse('line-weight-set', r);
+  } catch (e) {
+    console.error(`${TAG} ❌ set-line-weight:`, e);
+    sendResponse('line-weight-set', { ok: false, error: e?.message || 'Error' });
+  }
+}
+
 async function handleAgregarExtra(msg) {
   try {
     const { reservaId, importe, descripcion } = msg || {};
@@ -1072,10 +1757,12 @@ async function handleAgregarExtra(msg) {
   }
 }
 
+// v1.0.37 — + varianteSel (opcional). Lo envía el widget v1.1.83 desde el
+// modal "⛓ Complemento" cuando el complemento elegido tiene variantes.
 async function handleAgregarComplemento(msg) {
   try {
-    const { reservaId, setupUid } = msg || {};
-    const r = await agregarComplementoReserva({ reservaId, setupUid });
+    const { reservaId, setupUid, varianteSel } = msg || {};
+    const r = await agregarComplementoReserva({ reservaId, setupUid, varianteSel: varianteSel || null });
     sendResponse('complemento-agregado', r);
   } catch (e) {
     console.error(`${TAG} ❌ agregar-complemento:`, e);
@@ -1084,10 +1771,20 @@ async function handleAgregarComplemento(msg) {
 }
 
 // v1.0.15 — añadir servicio principal NUEVO al final de la cita existente
+// v1.0.36 — + varianteSel y complementosSetupUid. Los envía el widget
+//   v1.1.81 tanto desde "+ Servicio adicional" del modal de cita como
+//   desde el armado múltiple. Ambos opcionales: si no llegan, el backend
+//   agregarServicioReserva se comporta igual que antes (precio base).
 async function handleAgregarServicio(msg) {
   try {
-    const { reservaId, setupUid, precioOverride } = msg || {};
-    const r = await agregarServicioReserva({ reservaId, setupUid, precioOverride });
+    const { reservaId, setupUid, precioOverride, varianteSel, complementosSetupUid } = msg || {};
+    const r = await agregarServicioReserva({
+      reservaId,
+      setupUid,
+      precioOverride,
+      varianteSel: varianteSel || null,
+      complementosSetupUid: Array.isArray(complementosSetupUid) ? complementosSetupUid : []
+    });
     sendResponse('servicio-agregado', r);
   } catch (e) {
     console.error(`${TAG} ❌ agregar-servicio:`, e);
@@ -1118,7 +1815,10 @@ async function handleVenderProductosCita(msg) {
       metodoPago: metodoPago || 'Efectivo',
       currency: 'EUR',
       packId: reservaId || '',
-      bookingId: ''
+      bookingId: '',
+      // v1.0.41 — empleado logueado en Recepción. Vacío si no hay capa de
+      // acceso activa; el informe lo muestra como "Administrador".
+      soldBy: (_empleadoActivo && _empleadoActivo.staffName) || ''
     });
     console.log(`${TAG} 🛍 venderProductosDesdeAgenda result:`, JSON.stringify(res));
     if (res?.ok) {
@@ -1180,6 +1880,25 @@ async function handleQuitarItem(msg) {
 //   los mensajes que el widget envía por el bridge 'recepcion-message' y
 //   contesta vía sendResponse (atributo 'response' del Custom Element).
 // =====================================================
+
+// v1.0.29 — Responde al widget con brandName y legalName del salón, para
+// las cabeceras del texto copiable del informe del día (bloque productivo
+// usa brandName; bloque financiero usa legalName). Patrón puente idéntico
+// a handleUsersActivation. Ante fallo devuelve cadenas vacías: el widget
+// compone igualmente el texto sin cabecera de nombre.
+async function handleSalonNombres() {
+  try {
+    const r = await getSalonConfig();
+    const cfg = (r && r.ok && r.config) ? r.config : {};
+    sendResponse('salonNombres', {
+      brandName: cfg.brandName || '',
+      legalName: cfg.legalName || ''
+    });
+  } catch (e) {
+    console.warn(`${TAG} ⚠️ getSalonConfig falló:`, e?.message);
+    sendResponse('salonNombres', { brandName: '', legalName: '' });
+  }
+}
 
 // Responde al widget si el salón tiene la capa de acceso activa.
 async function handleUsersActivation() {
@@ -1315,14 +2034,30 @@ $w.onReady(function () {
         case 'obtenerDocumento': handleObtenerDocumento(msg); break;
         case 'generarTicket':    handleGenerarTicket(msg); break;
         case 'generarFactura':   handleGenerarFactura(msg); break;
+        case 'generarTicketVenta':    handleGenerarTicketVenta(msg); break;
+        case 'generarFacturaVenta':   handleGenerarFacturaVenta(msg); break;
+        case 'obtenerDocumentoVenta': handleObtenerDocumentoVenta(msg); break;
         case 'buscarCliente':    handleBuscarCliente(msg); break;
         case 'crearCliente':     handleCrearCliente(msg); break;
         case 'editarContacto':   handleEditarContacto(msg); break;
         case 'clientesReady':    if (cacheReady) sendResponse('clientesReady', { total: cacheContactos.length }); break;
+        // v1.0.31 — ESPECIALES (venta manual PRIME/Bonos/Tarjetas)
+        case 'espBuscarCliente':  handleEspBuscarCliente(msg); break;
+        case 'espCrearCliente':   handleEspCrearCliente(msg); break;
+        case 'getEspecialesData': handleGetEspecialesData(); break;
+        case 'emitirBono':        handleEmitirBono(msg); break;
+        case 'emitirPrime':       handleEmitirPrime(msg); break;
+        case 'emitirTarjeta':     handleEmitirTarjeta(msg); break;
         case 'caja-calcular':    handleCajaCalcular(msg); break;
         case 'caja-guardar':     handleCajaGuardar(msg); break;
         case 'caja-cerrar':      handleCajaCerrar(msg); break;
+        case 'caja-confirmar-metodo': handleCajaConfirmarMetodo(msg); break;
         case 'caja-movimiento':  handleCajaMovimiento(msg); break;
+        // v1.0.32 — apertura de caja (fondo inicial del día)
+        case 'check-apertura-caja': handleCheckApertura(msg); break;
+        case 'caja-abrir':          handleAbrirCaja(msg); break;
+        // v1.0.33 — fijar fondo inicial editable desde el arqueo
+        case 'caja-set-fondo':      handleCajaSetFondo(msg); break;
         case 'cierre-dia':       handleCierreDia(msg); break;
         case 'get-settings':     handleGetSettings(); break;
         case 'save-settings':    handleSaveSettings(msg.settings); break;
@@ -1338,15 +2073,28 @@ $w.onReady(function () {
         case 'get-productos':        handleGetProductos(); break;
         case 'quitar-item':          handleQuitarItem(msg); break;
         case 'mover-fase':           handleMoverFase(msg); break;
+        case 'redimensionar-fase':   handleRedimensionarFase(msg); break;
+        case 'extender-fase':        handleExtenderFase(msg); break;
+        case 'set-line-weight':      handleSetLineWeight(msg); break;
         // v1.0.17 — bloqueos persistentes
         case 'crearBloqueo':         handleCrearBloqueo(msg); break;
         case 'eliminarBloqueo':      handleEliminarBloqueo(msg); break;
         case 'actualizarBloqueo':    handleActualizarBloqueo(msg); break;
         // v1.0.22 — capa de acceso (login en el Shadow DOM del widget)
         case 'usersActivation':      handleUsersActivation(); break;
+        case 'salonNombres':         handleSalonNombres(); break;
         case 'staffLogin':           handleStaffLogin(); break;
         case 'validatePin':          handleValidatePin(msg); break;
         case 'logEvent':             handleLogEvent(msg); break;
+        // v1.0.34 — popup ALMACÉN
+        case 'ftBuscarCliente':      handleFtBuscarCliente(msg); break;
+        // v1.0.44 — FICHA DEL CLIENTE (popup del modal de la cita)
+        case 'getFichaClienteRecords': handleGetFichaCliente(msg); break;
+        case 'guardarFichaCliente':    handleGuardarFichaCliente(msg); break;
+        case 'quitarFichaCliente':     handleQuitarFichaCliente(msg); break;
+        case 'getAlmacenConsumibles': handleAlmacenConsumibles(); break;
+        case 'almacenPapelera':       handleAlmacenPapelera(msg); break;
+        case 'almacenSacar':          handleAlmacenSacar(msg); break;
         default: console.warn(`${TAG} ⚠️ Tipo desconocido: ${msg.type}`);
       }
     } catch (err) {

@@ -1,10 +1,118 @@
 // =============================================================
 // facturacionSalonLogic.web.js
 // KAMISUITE V2 — Módulo de Facturación del Salón a sus Clientes
-// VERSION: 1.0.3
-// TAG: facturacion-salon-v1.0.3
+// VERSION: 1.0.7
+// TAG: facturacion-salon-v1.0.7
 // =============================================================
 // CHANGELOG:
+// v1.0.7 (2026-08-14) — ÍNDICE DE DOCUMENTOS para listados.
+//   NEW listarIndiceDocumentos(): devuelve UNA fila ligera por documento
+//   vigente {key, modo, invoiceNumber}, para que el Editor de Cobros
+//   pueda marcar en la LISTA qué cobros ya tienen ticket o factura sin
+//   abrir la ficha de cada uno.
+//
+//   CLAVE DE CRUCE: `key` = sourceKey (que es el bookingId del cobro en
+//   PaymentReservations, tanto en reservas 'KRI_<id>' como en ventas de
+//   tienda). Para filas anteriores a v1.0.4 —cuando sourceKey aún no
+//   existía— se reconstruye como 'KRI_' + reservaId. Así el widget cruza
+//   por un único campo que ya tiene en cada fila del listado.
+//
+//   NO devuelve pdfUrl A PROPÓSITO: _resolverPdfUrlHttps llama a
+//   mediaManager.getDownloadUrl con caducidad de 3600s. Resolver cientos
+//   de URLs al pintar la lista sería caro y además habrían caducado al
+//   pulsarlas. El PDF se resuelve de una en una, al hacer clic, con los
+//   obtenerDocumento* que ya existían.
+//
+//   Excluye status='rectificada' (mismo criterio que la idempotencia):
+//   un ticket reemplazado por factura no debe marcarse en la lista.
+//   Paginación con el patrón de listarPaymentReservations.
+//   Cero cambios en el resto del archivo.
+//
+// v1.0.6 (2026-08-14) — COMPATIBILIDAD CON LA ANULACIÓN DE COBROS
+//   (paymentReservationsLogic v1.4.0). CAMBIO OBLIGATORIO: desplegar
+//   ESTA versión ANTES o A LA VEZ que la v1.4.0 del backend de cobros.
+//
+//   PROBLEMA: `_leerPagoDeReserva` y `_leerPagoPorBookingId` hacían
+//     .eq('bookingId', clave).limit(1) SIN orden y SIN filtro de
+//     estado, quedándose con la primera fila que devolviera Wix.
+//     Era inofensivo mientras un bookingId tenía como mucho una fila.
+//     Con la anulación, un mismo bookingId puede tener TRES:
+//       KRI_abc  +50 €  ANULADO
+//       KRI_abc  −50 €  REVERSION
+//       KRI_abc  +50 €  (el cobro bueno)
+//     Sin orden garantizado, la query podía devolver:
+//       · la REVERSION → totalAmount negativo → salta el guard
+//         'El importe cobrado es cero' y el salón no entiende nada;
+//       · la ANULADA   → se emite un documento fiscal por un importe
+//         que fue revertido. Este es el grave.
+//
+//   FIX: ambas funciones leen TODAS las filas del bookingId, descartan
+//     las que no están activas (estadoCobro ANULADO / REVERSION) y se
+//     quedan con la ACTIVA más reciente por fechaPago. Helper nuevo
+//     `_pagoVigente`.
+//
+//   RETROCOMPATIBILIDAD: las filas anteriores a v1.4.0 tienen
+//     estadoCobro VACÍO. Vacío === ACTIVO, mismo criterio que
+//     `_esActivo` de paymentReservationsLogic v1.4.0 y que `estadoDe`
+//     del widget. Si ese criterio cambia en un sitio, cambia en los tres.
+//     Con una sola fila activa el comportamiento es idéntico a v1.0.5.
+//
+//   NO SE TOCA: numeración, series, desglose de IVA, generación y
+//     subida del PDF, resolución de URL HTTPS, campos Verifactu,
+//     idempotencia ni la firma de los seis webMethods públicos.
+//
+//   PENDIENTE CONSCIENTE (decisión de negocio, no bug): si se emitió
+//     ticket, luego se anuló el cobro y se recobró, la idempotencia
+//     sigue encontrando el ticket viejo y bloquea por 'duplicado'.
+//     Es lo correcto fiscalmente (ese ticket existe y solo se corrige
+//     con rectificativa), pero el operador ve 'duplicado' sin contexto.
+//
+// v1.0.5 (2026-08-04) — La RAZÓN SOCIAL va al campo nativo del contacto
+//   - Se escribía en el extended field 'invoices.company', que no existe:
+//     Wix guarda la empresa en la propiedad NATIVA `info.company` del
+//     contacto (documentación de extended fields: nombre, empresa,
+//     teléfonos, direcciones y emails son propiedades por defecto). El CIF
+//     sí es extended field, creado por la app Wix Invoices.
+//     Consecuencia real: ninguna razón social se ha guardado nunca.
+//   - Riesgo colateral corregido: ambas escrituras iban en la MISMA
+//     llamada a updateContact, así que un rechazo de la clave inexistente
+//     se llevaba por delante también el CIF, con el error tragado en el
+//     catch. Ahora son dos llamadas independientes.
+//   - Lectura: la razón social se toma de `info.company`, con el extended
+//     field legacy como respaldo por si alguna ficha lo tuviera.
+//   - Cambio contenido en `_resolverDatosReceptor`. Nada más se toca.
+//
+// v1.0.4 (2026-08-04) — Documentos de VENTAS SIN CITA (botón TIENDA)
+//   - Problema: toda la emisión estaba anclada a `reservaId`. Una venta de
+//     productos de mostrador (Recepción PRO → TIENDA) no crea reserva, así
+//     que no había forma de emitir ticket ni factura KAMISUITE por ella,
+//     aunque el cobro sí queda registrado en PaymentReservations con
+//     bookingId = orderId de Wix Stores y staff = 'TIENDA'.
+//   - SOLUCIÓN: `_emitirDocumento` acepta ahora un ORIGEN:
+//       · sourceType 'reserva' (default) → comportamiento EXACTO de v1.0.3.
+//       · sourceType 'tienda'            → se salta la lectura de reserva y
+//         trabaja directamente contra la fila de cobro, localizada por
+//         `bookingId = sourceKey`.
+//   - Dos campos nuevos en Invoices (Texto), creados por Jal:
+//       · sourceType — 'reserva' | 'tienda'. Vacío se interpreta 'reserva',
+//         así que las filas históricas no necesitan migración.
+//       · sourceKey  — clave del cobro en PaymentReservations (bookingId).
+//         En reservas es 'KRI_<reservaId>'; en tienda, el orderId.
+//     La idempotencia de las ventas va por `sourceKey`; la de las reservas
+//     sigue yendo por `reservaId`, sin cambios.
+//   - Tres webMethods nuevos, todos envoltorios finos:
+//       generarTicketVenta({ sourceKey })
+//       generarFacturaVenta({ sourceKey, vatId?, legalName? })
+//       obtenerDocumentoVenta({ sourceKey })
+//   - El upgrade ticket→factura (rectificativa) funciona igual en ventas:
+//     opera sobre el documento existente, no sobre la reserva.
+//   - Cero cambios en numeración, series, desglose de IVA, generación y
+//     subida del PDF, resolución de URL HTTPS y campos Verifactu. Los tres
+//     webMethods de citas (generarTicketCita, generarFacturaCita,
+//     obtenerDocumentoReserva) conservan firma y comportamiento.
+//   - El parser de líneas ya entendía el formato de la venta de productos
+//     ('🛒 Nombre xN (X€)'), no ha hecho falta tocarlo.
+//
 // v1.0.3 (2026-06-28) — Upgrade Ticket → Factura completa (rectificativa)
 //   - Escenario real: clienta recibe ticket porque no recuerda CIF/DNI,
 //     vuelve más tarde con los datos para que se le emita la factura
@@ -137,7 +245,7 @@ import { jsPDF } from 'jspdf';
 // CONSTANTES
 // -------------------------------------------------------------
 
-const VERSION = '1.0.3';
+const VERSION = '1.0.7';
 const TAG = `[FacturacionSalon][${VERSION}]`;
 
 const COL_INVOICES    = 'Invoices';
@@ -154,10 +262,18 @@ const DEFAULT_VAT_RATE       = 21;
 const DEFAULT_INVOICE_SERIES = 'F';
 const DEFAULT_TICKET_SERIES  = 'T';
 const FIELD_VAT_ID_CRM       = 'invoices.vatId';   // system field Wix Invoices
-const FIELD_LEGAL_NAME_CRM   = 'invoices.company'; // system field Wix Invoices (razón social)
+// v1.0.5 — 'invoices.company' NO existe como extended field en Wix. La
+// razón social es propiedad nativa del contacto (info.company). La
+// constante se conserva solo para LEER fichas antiguas que pudieran
+// tenerlo; nunca se escribe en ella.
+const FIELD_LEGAL_NAME_CRM   = 'invoices.company'; // legacy — solo lectura
 
 const MODO_TICKET  = 'ticket';
 const MODO_FACTURA = 'factura';
+
+// v1.0.4 — origen del documento. Vacío en filas históricas = 'reserva'.
+const SOURCE_RESERVA = 'reserva';
+const SOURCE_TIENDA  = 'tienda';
 
 const TIPO_OP_TICKET  = 'F2';   // factura simplificada (Reglamento IRPF)
 const TIPO_OP_FACTURA = 'F1';   // factura completa
@@ -212,21 +328,66 @@ async function _leerReserva(reservaId) {
   }
 }
 
-// Lee PaymentReservations por bookingId = KRI_${reservaId}.
-// Devuelve null si no se encuentra fila de pago (la reserva no fue
-// cobrada todavía → no se puede emitir documento).
-async function _leerPagoDeReserva(reservaId) {
-  const bookingIdKey = `${PREFIJO_PAGO}${reservaId}`;
+// v1.0.6 — ¿Es un cobro vivo? Las filas anteriores a v1.4.0 tienen
+// estadoCobro VACÍO: vacío === ACTIVO. Criterio idéntico a `_esActivo`
+// de paymentReservationsLogic v1.4.0 y a `estadoDe` del widget del
+// Editor de Cobros. Si cambia en un sitio, cambia en los tres.
+function _cobroActivo(item) {
+  const e = String((item && item.estadoCobro) || '').trim().toUpperCase();
+  return e === '' || e === 'ACTIVO';
+}
+
+// v1.0.6 — Devuelve el cobro VIGENTE de un bookingId.
+// Un mismo bookingId puede tener varias filas tras una anulación
+// (original ANULADO + su REVERSION + el cobro nuevo). Se descartan las
+// no activas y se devuelve la más reciente por fechaPago: si el salón
+// anuló y volvió a cobrar, el documento debe emitirse sobre el cobro
+// bueno, no sobre el revertido.
+// NO se usa .limit(1): sin orden garantizado, Wix puede devolver
+// cualquiera de las tres. Ese era exactamente el bug de v1.0.5.
+async function _pagoVigente(bookingIdKey) {
+  if (!bookingIdKey) return null;
   try {
     const r = await wixData.query(COL_PAGOS)
       .eq('bookingId', bookingIdKey)
-      .limit(1)
       .find(CMS_OPTS);
-    return (r.items && r.items[0]) ? r.items[0] : null;
+    const items = (r && r.items) ? r.items : [];
+    if (items.length === 0) return null;
+
+    const activos = items.filter(_cobroActivo);
+    if (activos.length === 0) {
+      console.log(`${TAG} ℹ️ ${bookingIdKey}: ${items.length} fila(s) de cobro, ninguna activa (anuladas)`);
+      return null;
+    }
+    if (activos.length === 1) return activos[0];
+
+    // Varias activas: la más reciente por fechaPago. Las filas sin
+    // fecha van al final (no pueden ganar a una fechada).
+    activos.sort((a, b) => {
+      const ta = a.fechaPago ? new Date(a.fechaPago).getTime() : -Infinity;
+      const tb = b.fechaPago ? new Date(b.fechaPago).getTime() : -Infinity;
+      return tb - ta;
+    });
+    console.log(`${TAG} ℹ️ ${bookingIdKey}: ${activos.length} cobros activos, se toma el más reciente`);
+    return activos[0];
   } catch (e) {
     console.warn(`${TAG} Error leyendo PaymentReservations: ${e.message}`);
     return null;
   }
+}
+
+// Lee PaymentReservations por bookingId = KRI_${reservaId}.
+// Devuelve null si no hay cobro vigente (la reserva no fue cobrada
+// todavía, o su cobro está anulado → no se puede emitir documento).
+async function _leerPagoDeReserva(reservaId) {
+  return await _pagoVigente(`${PREFIJO_PAGO}${reservaId}`);
+}
+
+// v1.0.4 — Lee PaymentReservations por bookingId literal. Lo usan las
+// ventas sin cita, cuya clave de cobro es el orderId de Wix Stores
+// (lo escribe tiendaProductos.venderProductosDesdeAgenda).
+async function _leerPagoPorBookingId(bookingId) {
+  return await _pagoVigente(bookingId);
 }
 
 // Lee contacto CRM v2 elevado. Devuelve null si falla.
@@ -262,6 +423,24 @@ async function _buscarDocumentoExistente(reservaId) {
     return (r.items && r.items[0]) ? r.items[0] : null;
   } catch (e) {
     console.warn(`${TAG} Error en idempotencia: ${e.message}`);
+    return null;
+  }
+}
+
+// v1.0.4 — Idempotencia de las ventas sin cita: por `sourceKey`. Mismas
+// reglas que la de reservas (excluye documentos rectificados).
+async function _buscarDocumentoExistentePorSource(sourceKey) {
+  if (!sourceKey) return null;
+  try {
+    const r = await wixData.query(COL_INVOICES)
+      .eq('sourceKey', sourceKey)
+      .ne('status', 'rectificada')
+      .descending('_createdDate')
+      .limit(1)
+      .find(CMS_OPTS);
+    return (r.items && r.items[0]) ? r.items[0] : null;
+  } catch (e) {
+    console.warn(`${TAG} Error en idempotencia por sourceKey: ${e.message}`);
     return null;
   }
 }
@@ -627,16 +806,31 @@ async function _resolverDatosReceptor({ contactId, vatId, legalName }) {
   // Caso 1: el operador acaba de añadirlos → persistir y devolver.
   if (vId) {
     if (contactId) {
+      // v1.0.5 — DOS escrituras SEPARADAS, a propósito:
+      //   · CIF/NIF  → extended field 'invoices.vatId' (campo de la app
+      //     Wix Invoices, visible en la ficha bajo "Facturas de Wix").
+      //   · Razón social → info.company, que es propiedad NATIVA del
+      //     contacto, no un extended field.
+      // Antes iban en la misma llamada y la razón social viajaba como
+      // extended field 'invoices.company', que no existe. Si Wix rechazaba
+      // esa clave, tumbaba la llamada entera y el CIF tampoco se guardaba.
+      // Separadas, un fallo no arrastra al otro.
+      const updateContactElev = elevate(contacts.updateContact);
       try {
-        const updateContactElev = elevate(contacts.updateContact);
-        const ext = { [FIELD_VAT_ID_CRM]: vId };
-        if (lName) ext[FIELD_LEGAL_NAME_CRM] = lName;
         await updateContactElev(contactId, {
-          info: { extendedFields: { items: ext } }
+          info: { extendedFields: { items: { [FIELD_VAT_ID_CRM]: vId } } }
         });
-        console.log(`${TAG} ✅ vatId/legalName persistidos en CRM ${contactId.substring(0, 8)}`);
+        console.log(`${TAG} ✅ vatId persistido en CRM ${contactId.substring(0, 8)}`);
       } catch (e) {
         console.warn(`${TAG} ⚠️ No se pudo persistir vatId en CRM: ${e.message}. Continuando con la emisión.`);
+      }
+      if (lName) {
+        try {
+          await updateContactElev(contactId, { info: { company: lName } });
+          console.log(`${TAG} ✅ Razón social persistida en info.company de ${contactId.substring(0, 8)}`);
+        } catch (e) {
+          console.warn(`${TAG} ⚠️ No se pudo persistir la razón social: ${e.message}. Continuando con la emisión.`);
+        }
       }
     }
     return { ok: true, vatId: vId, legalName: lName };
@@ -653,30 +847,51 @@ async function _resolverDatosReceptor({ contactId, vatId, legalName }) {
   const ef = contact?.info?.extendedFields || {};
   // Soporta tanto el formato plano (key→value) como items[].
   let efVat = ef[FIELD_VAT_ID_CRM] || '';
-  let efLegal = ef[FIELD_LEGAL_NAME_CRM] || '';
+  let efLegal = ef[FIELD_LEGAL_NAME_CRM] || '';   // legacy, casi siempre vacío
   if (!efVat && Array.isArray(ef.items)) {
     for (const it of ef.items) {
       if (it.key === FIELD_VAT_ID_CRM) efVat = it.value || '';
       if (it.key === FIELD_LEGAL_NAME_CRM) efLegal = it.value || '';
     }
   }
+  // v1.0.5 — la razón social se lee del campo nativo. El extended field
+  // legacy queda como respaldo por si alguna ficha lo tuviera.
+  const companyNativo = String(contact?.info?.company || '').trim();
   if (!efVat) {
     return { ok: false, error: 'Cliente sin CIF/NIF en su ficha — añádelo antes de emitir factura completa.' };
   }
-  return { ok: true, vatId: String(efVat), legalName: String(efLegal || '') };
+  return {
+    ok: true,
+    vatId: String(efVat),
+    legalName: companyNativo || String(efLegal || '')
+  };
 }
 
 // =============================================================
 // FUNCIÓN CORE — EMITIR DOCUMENTO (ticket o factura)
 // =============================================================
-async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
+// v1.0.4 — `sourceType` decide de dónde salen los datos del documento:
+//   · 'reserva' (default) → reservaId + KamisuiteReservations + cobro KRI_
+//   · 'tienda'            → sourceKey = bookingId del cobro, sin reserva
+// Todo lo demás (serie, numeración, IVA, PDF, Verifactu) es idéntico.
+async function _emitirDocumento({ reservaId, modo, vatId, legalName, sourceType, sourceKey }) {
+  const origen = (sourceType === SOURCE_TIENDA) ? SOURCE_TIENDA : SOURCE_RESERVA;
+  const esVenta = (origen === SOURCE_TIENDA);
+
   // ── 1. Validar inputs ────────────────────────────────────
-  if (!reservaId) {
+  if (esVenta) {
+    if (!sourceKey) {
+      return { ok: false, version: VERSION, error: 'Falta sourceKey de la venta' };
+    }
+  } else if (!reservaId) {
     return { ok: false, version: VERSION, error: 'Falta reservaId' };
   }
   if (modo !== MODO_TICKET && modo !== MODO_FACTURA) {
     return { ok: false, version: VERSION, error: `Modo no válido: ${modo}` };
   }
+
+  // Clave de cobro y clave de trazabilidad del documento.
+  const claveCobro = esVenta ? String(sourceKey) : `${PREFIJO_PAGO}${reservaId}`;
 
   // ── 2. Idempotencia refinada (v1.0.3: permite upgrade ticket→factura) ──
   // Reglas:
@@ -686,7 +901,9 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
   //                                                  rectificativa y marca
   //                                                  el ticket como rectificada.
   //   · Factura existente (cualquier modo pedido)  → bloqueado (duplicado)
-  const existente = await _buscarDocumentoExistente(reservaId);
+  const existente = esVenta
+    ? await _buscarDocumentoExistentePorSource(claveCobro)
+    : await _buscarDocumentoExistente(reservaId);
   let rectificaTicket = null;   // si != null, al final marcamos este ticket
   if (existente) {
     const esTicketExistente  = (existente.modo === MODO_TICKET);
@@ -696,13 +913,13 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
 
     // Caso UPGRADE: hay ticket vigente y se pide factura → emite rectificativa
     if (esTicketExistente && pideFactura) {
-      console.log(`${TAG} 🔄 Upgrade ticket→factura: reserva ${reservaId.substring(0, 8)} tenía ${existente.invoiceNumber}, ahora se emite factura rectificativa`);
+      console.log(`${TAG} 🔄 Upgrade ticket→factura: ${origen} ${String(claveCobro).substring(0, 12)} tenía ${existente.invoiceNumber}, ahora se emite factura rectificativa`);
       rectificaTicket = existente;
       // Continúa con el flujo normal de emisión más abajo, pero al final
       // marcará el ticket como rectificada y rellenará rectifiesInvoiceNumber.
     } else {
       // Resto de casos: bloqueado (devuelve el documento existente).
-      console.log(`${TAG} ⚠️ Reserva ${reservaId.substring(0, 8)} ya tiene documento ${existente.invoiceNumber} (modo=${existente.modo}); modo solicitado=${modo} → duplicado`);
+      console.log(`${TAG} ⚠️ ${origen} ${String(claveCobro).substring(0, 12)} ya tiene documento ${existente.invoiceNumber} (modo=${existente.modo}); modo solicitado=${modo} → duplicado`);
       const pdfUrl = await _resolverPdfUrlHttps(existente.pdfUrl || '');
       return {
         ok: true,
@@ -721,18 +938,30 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
   }
 
   // ── 3. Leer reserva ──────────────────────────────────────
-  const reserva = await _leerReserva(reservaId);
-  if (!reserva) {
-    return { ok: false, version: VERSION, error: `Reserva no encontrada: ${reservaId}` };
-  }
-  if (reserva.status !== 'PAGADO') {
-    return { ok: false, version: VERSION, error: 'La reserva debe estar PAGADA para emitir documento.' };
+  // En las ventas de tienda no hay reserva: el cobro ES el hecho
+  // imponible. `reserva` queda como objeto vacío y los datos del cliente
+  // se toman de la fila de pago más abajo.
+  let reserva = {};
+  if (!esVenta) {
+    reserva = await _leerReserva(reservaId);
+    if (!reserva) {
+      return { ok: false, version: VERSION, error: `Reserva no encontrada: ${reservaId}` };
+    }
+    if (reserva.status !== 'PAGADO') {
+      return { ok: false, version: VERSION, error: 'La reserva debe estar PAGADA para emitir documento.' };
+    }
   }
 
   // ── 4. Leer pago real (importe neto + descripción definitiva) ─
-  const pago = await _leerPagoDeReserva(reservaId);
+  const pago = esVenta
+    ? await _leerPagoPorBookingId(claveCobro)
+    : await _leerPagoDeReserva(reservaId);
   if (!pago) {
-    return { ok: false, version: VERSION, error: 'No se encontró el cobro de esta reserva.' };
+    return {
+      ok: false,
+      version: VERSION,
+      error: esVenta ? 'No se encontró el cobro de esta venta.' : 'No se encontró el cobro de esta reserva.'
+    };
   }
   const totalAmount = _round2(pago.importeTotal);
   if (totalAmount <= 0) {
@@ -761,7 +990,7 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
   if (lineas.length === 0) {
     // Fallback: si la descripción está vacía, una línea genérica
     lineas.push({
-      nombre: reserva.title || 'Servicio',
+      nombre: reserva.title || (esVenta ? 'Venta de productos' : 'Servicio'),
       cantidad: 1,
       subtotal: totalAmount,
       precioUnit: totalAmount,
@@ -813,18 +1042,39 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
 
   // ── 10. Construir objeto documento (en memoria) ──────────
   const issueDate = new Date();
-  const fechaServicio = reserva.fechaReserva ? new Date(reserva.fechaReserva) : issueDate;
-  const concept = `Servicios ${salonCfg.brandName || salonCfg.legalName || ''} - ${_formatFechaCorta(fechaServicio)}`.trim();
+  // v1.0.4 — en ventas de tienda la fecha de operación es la del cobro.
+  const fechaServicio = reserva.fechaReserva
+    ? new Date(reserva.fechaReserva)
+    : (pago.fechaPago ? new Date(pago.fechaPago) : issueDate);
+  const rotulo = salonCfg.brandName || salonCfg.legalName || '';
+  const concept = (esVenta
+    ? `Productos ${rotulo} - ${_formatFechaCorta(fechaServicio)}`
+    : `Servicios ${rotulo} - ${_formatFechaCorta(fechaServicio)}`).trim();
 
   const clientName = (pago.nombreCliente || reserva.clientName || 'Cliente').trim();
-  const clientEmail = String(reserva.contactEmail || reserva.email || '').trim();
-  const clientPhone = String(reserva.clientPhone || reserva.contactPhone || '').trim();
+  let clientEmail = String(reserva.contactEmail || reserva.email || '').trim();
+  let clientPhone = String(reserva.clientPhone || reserva.contactPhone || '').trim();
+  // v1.0.4 — la fila de cobro de una venta de tienda no guarda email ni
+  // teléfono (solo contactId), así que se leen del CRM. Best-effort: si
+  // falla, el documento se emite igual — ninguno de los dos es obligatorio
+  // en el documento fiscal.
+  if (esVenta && !clientEmail && !clientPhone && pago.contactId) {
+    const c = await _leerContacto(pago.contactId);
+    const emails = c?.info?.emails?.items;
+    const phones = c?.info?.phones?.items;
+    if (Array.isArray(emails) && emails.length) clientEmail = String(emails[0].email || '').trim();
+    if (Array.isArray(phones) && phones.length) clientPhone = String(phones[0].phone || '').trim();
+  }
 
   const documento = {
     invoiceNumber,
     seriesCode,
     modo,
-    reservaId,
+    reservaId: esVenta ? '' : reservaId,
+    // v1.0.4 — origen del documento. En reservas se rellenan igualmente,
+    // para que toda fila nueva quede trazada de forma homogénea.
+    sourceType: origen,
+    sourceKey: claveCobro,
     paymentReservationId: pago._id || '',
     wixInvoiceId: '',            // reservado — no usamos Wix Invoices
     wixInvoiceVersion: 0,        // reservado
@@ -901,7 +1151,7 @@ async function _emitirDocumento({ reservaId, modo, vatId, legalName }) {
     };
   }
 
-  console.log(`${TAG} ✅ ${modo.toUpperCase()} emitido: ${invoiceNumber} | total=${totalAmount}€ | reserva=${reservaId.substring(0, 8)}`);
+  console.log(`${TAG} ✅ ${modo.toUpperCase()} emitido: ${invoiceNumber} | total=${totalAmount}€ | ${origen}=${String(claveCobro).substring(0, 12)}`);
 
   // ── 14. Si es rectificativa: marcar el ticket original como rectificada ──
   // READ-MERGE-UPDATE atómico (regla absoluta del proyecto: wixData.update
@@ -983,6 +1233,106 @@ export const generarFacturaCita = webMethod(
   Permissions.SiteMember,
   async ({ reservaId, vatId, legalName } = {}) => {
     return await _emitirDocumento({ reservaId, modo: MODO_FACTURA, vatId, legalName });
+  }
+);
+
+// =============================================================
+// v1.0.4 — VENTAS SIN CITA (botón TIENDA de Recepción PRO)
+// `sourceKey` es el bookingId con el que la venta quedó registrada en
+// PaymentReservations (el orderId de Wix Stores). No hay reserva ni
+// comprobación de status: el cobro es el hecho imponible.
+// =============================================================
+
+export const generarTicketVenta = webMethod(
+  Permissions.SiteMember,
+  async ({ sourceKey } = {}) => {
+    return await _emitirDocumento({ modo: MODO_TICKET, sourceType: SOURCE_TIENDA, sourceKey });
+  }
+);
+
+export const generarFacturaVenta = webMethod(
+  Permissions.SiteMember,
+  async ({ sourceKey, vatId, legalName } = {}) => {
+    return await _emitirDocumento({ modo: MODO_FACTURA, sourceType: SOURCE_TIENDA, sourceKey, vatId, legalName });
+  }
+);
+
+// Consulta auxiliar equivalente a obtenerDocumentoReserva, por sourceKey.
+export const obtenerDocumentoVenta = webMethod(
+  Permissions.SiteMember,
+  async ({ sourceKey } = {}) => {
+    try {
+      if (!sourceKey) {
+        return { ok: false, version: VERSION, error: 'Falta sourceKey' };
+      }
+      const doc = await _buscarDocumentoExistentePorSource(sourceKey);
+      if (!doc) {
+        return { ok: true, version: VERSION, existe: false };
+      }
+      const pdfUrl = await _resolverPdfUrlHttps(doc.pdfUrl || '');
+      return {
+        ok: true,
+        version: VERSION,
+        existe: true,
+        documento: {
+          modo: doc.modo,
+          invoiceNumber: doc.invoiceNumber,
+          pdfUrl,
+          invoiceId: doc._id,
+          issueDate: doc.issueDate,
+          totalAmount: doc.totalAmount,
+          baseAmount: doc.baseAmount,
+          vatAmount: doc.vatAmount,
+          vatRate: doc.vatRate
+        }
+      };
+    } catch (e) {
+      console.error(`${TAG} ❌ obtenerDocumentoVenta: ${e.message}`);
+      return { ok: false, version: VERSION, error: e.message };
+    }
+  }
+);
+
+// =============================================================
+// v1.0.7 — Índice ligero de documentos vigentes para listados.
+// Una fila por documento: { key, modo, invoiceNumber }.
+// `key` cruza contra PaymentReservations.bookingId.
+// =============================================================
+export const listarIndiceDocumentos = webMethod(
+  Permissions.SiteMember,
+  async () => {
+    try {
+      let items = [];
+      let r = await wixData.query(COL_INVOICES)
+        .ne('status', 'rectificada')
+        .limit(1000)
+        .find(CMS_OPTS);
+      items = items.concat(r.items);
+      while (r.hasNext()) {
+        r = await r.next();
+        items = items.concat(r.items);
+      }
+
+      const out = [];
+      for (const inv of items) {
+        // sourceKey se rellena desde v1.0.4 en TODAS las filas nuevas.
+        // Las anteriores solo tienen reservaId → se reconstruye la clave.
+        const key = String(inv.sourceKey || '')
+          || (inv.reservaId ? `${PREFIJO_PAGO}${inv.reservaId}` : '');
+        if (!key || !inv.invoiceNumber) continue;
+        out.push({
+          key,
+          modo: inv.modo || '',
+          invoiceNumber: inv.invoiceNumber
+        });
+      }
+
+      console.log(`${TAG} 📇 Índice de documentos: ${out.length} vigentes sobre ${items.length} filas`);
+      return { ok: true, version: VERSION, items: out, total: out.length };
+    } catch (e) {
+      console.error(`${TAG} ❌ listarIndiceDocumentos: ${e.message}`);
+      return { ok: false, version: VERSION, error: e.message, items: [] };
+    }
   }
 );
 

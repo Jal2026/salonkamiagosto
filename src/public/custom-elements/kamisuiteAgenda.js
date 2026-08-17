@@ -3,11 +3,33 @@
  * Archivo:  kamisuiteAgenda.js
  * Ubicación en Wix: public/custom-elements/
  * Tag name: kamisuite-agenda
- * VERSION:  2.2.6
- * FECHA:    11 Mayo 2026
+ * VERSION:  2.2.9
+ * FECHA:    3 Junio 2026
  *
+ * v2.2.9: FIX — Servicios con variantes (variants:true) NO disparan el fallback
+ *         getServiceInfo cuando el catálogo no tiene su precio/duración base
+ *         (caso típico: servicio marcado uso='wixnativo' en ServiceCatalog).
+ *         El fallback leía de Wix Bookings y sobrescribía hasVariants a false,
+ *         haciendo desaparecer el selector de variantes. Las variantes proveen
+ *         su propio precio/duración, no necesitan base.
+ *
+ * v2.2.8: FIX — Precio y duración de servicios SIMPLES y SERVICIOS_ADICIONALES
+ *         se leen de ServiceCatalog (CMS) en vez del array hardcoded.
+ *         Cero hardcoding de dur/price en SVC_BUTTONS ni SERVICIOS_ADICIONALES.
+ *         Nuevo evento del page code: 'catalogo-precios-data' al init.
+ *         Fallback existente getServiceInfo intacto para servicios sin variantes.
+ *         Cambio aditivo: estructura de arrays y rendering visual idénticos.
+ *
+ * v2.2.7: NEW — Cierre del día extendido. 3 secciones nuevas insertadas
+ *         ANTES del slot de arqueo (que sigue siendo el último bloque):
+ *         · 📋 Desglose fiscal (IVA % base+cuota, excluye propinas)
+ *         · 👥 Clientes del día (cobrados, ordenados por hora ASC)
+ *         · 🛒 Ventas Tienda POS (productos standalone sin reserva)
+ *         Backend nuevo: cierreLogicExtendido.web.js. NO toca testCheckout.
  * v2.2.6: NEW — Resumen del arqueo al final del informe de cierre (solo
  *         lectura). El popup de arqueo (botón 🏦) se mantiene intacto.
+ * v2.2.5: FIX — Arqueo de caja integrado dentro del panel de Cierre del
+ *         día (antes era popup separado). Eliminado botón 🏦 del topbar.
  * v2.2.4: NEW — Bloqueo siempre disponible (drag independiente del estado
  *         cliente/servicio). Papelera para borrar reservas pagadas.
  *         Arqueo de caja Nivel 2 (movimientos manuales, conteo, cierre).
@@ -46,7 +68,7 @@
 (function () {
   'use strict';
   if (customElements.get('kamisuite-agenda')) { console.log('[KamisuiteAgenda v2.2.3] Ya registrado.'); return; }
-  const VERSION = '2.2.6';
+  const VERSION = '2.2.9';
   const TAG = `[Agenda v${VERSION}]`;
   const CAL_START = 9, CAL_END = 21, DRAG_THRESHOLD = 6;
   const PALETTE = ['#7c3aed','#ea580c','#d97706','#2563eb','#15803d','#be185d','#dc2626','#0d9488','#1d4ed8','#9333ea','#059669','#475569'];
@@ -57,44 +79,44 @@
     { id:'0c22fa77-3602-4876-b744-ded83ed540f8', name:'C_Angela' }
   ];
   const SERVICIOS_ADICIONALES = [
-    { group:'Peinados', id:'6630467c-d405-4280-bf76-061a6718163c', name:'Peinado pelo corto', dur:30 },
-    { group:'Peinados', id:'02b8a9e3-9a62-413f-9688-08f50994e7b0', name:'Peinado pelo medio', dur:30 },
-    { group:'Peinados', id:'05b840f2-a41e-4f73-9da8-d61e37b6504e', name:'Peinado pelo largo', dur:40 },
-    { group:'Peinados', id:'0ccd37da-a5df-477e-88c1-43ab88c7d83c', name:'Secado sin cepillo', dur:15 },
-    { group:'Cortes', id:'b1caca60-ab09-4e55-a1ae-62eeb8583677', name:'Corte Mujer (lavado y secado)', dur:30 },
-    { group:'Cortes', id:'cbb00b12-3226-447a-9fe5-450af4a128c6', name:'Corte de pelo niña', dur:30 },
-    { group:'Caballero', id:'94febacf-af47-4393-b483-64063d886b51', name:'Corte de caballero', dur:30 },
-    { group:'Caballero', id:'722f8db1-faa6-40ba-9e8d-fb6e6d9eeea5', name:'Arreglo de Corte', dur:10 },
-    { group:'Tratamientos', id:'8a7d78c4-5e93-4ebb-b168-67580d082110', name:'Fusio Dose', dur:15 },
-    { group:'Tratamientos', id:'68e102e2-edc7-4d2e-926f-ffc79dd159b9', name:'Tratamiento EPRES', dur:15 },
-    { group:'Spa', id:'a38d6b5f-056d-41fb-b606-b6c2e33fc197', name:'Spa Capilar Premium', dur:90 }
+    { group:'Peinados', id:'6630467c-d405-4280-bf76-061a6718163c', name:'Peinado pelo corto' },
+    { group:'Peinados', id:'02b8a9e3-9a62-413f-9688-08f50994e7b0', name:'Peinado pelo medio' },
+    { group:'Peinados', id:'05b840f2-a41e-4f73-9da8-d61e37b6504e', name:'Peinado pelo largo' },
+    { group:'Peinados', id:'0ccd37da-a5df-477e-88c1-43ab88c7d83c', name:'Secado sin cepillo' },
+    { group:'Cortes', id:'b1caca60-ab09-4e55-a1ae-62eeb8583677', name:'Corte Mujer (lavado y secado)' },
+    { group:'Cortes', id:'cbb00b12-3226-447a-9fe5-450af4a128c6', name:'Corte de pelo niña' },
+    { group:'Caballero', id:'94febacf-af47-4393-b483-64063d886b51', name:'Corte de caballero' },
+    { group:'Caballero', id:'722f8db1-faa6-40ba-9e8d-fb6e6d9eeea5', name:'Arreglo de Corte' },
+    { group:'Tratamientos', id:'8a7d78c4-5e93-4ebb-b168-67580d082110', name:'Fusio Dose' },
+    { group:'Tratamientos', id:'68e102e2-edc7-4d2e-926f-ffc79dd159b9', name:'Tratamiento EPRES' },
+    { group:'Spa', id:'a38d6b5f-056d-41fb-b606-b6c2e33fc197', name:'Spa Capilar Premium' }
   ];
   const SVC_BUTTONS = [
     { family:'coloracion', label:'Mechas', id:'6bcaf646-6363-4734-a73a-70dbcf7398cb', group:'coloracion' },
     { family:'coloracion', label:'Tinte', id:'4d513fb4-b9a6-427e-a034-9bc4132cbb11', group:'coloracion' },
     { family:'coloracion', label:'T. Vegetal', id:'d04d7118-ea0a-4609-9332-36fb9e3f2eb7', group:'coloracion' },
     { family:'coloracion', label:'T. Hombre', id:'8dafa179-eaae-4d10-806b-0c7798031f03', group:'coloracion' },
-    { family:'simple', label:'Corte Mujer', id:'43eb401d-c873-400d-8e72-a559fadc3310', dur:30, price:33, variants:true, group:'cortesmujer' },
-    { family:'simple', label:'Corte Nina', id:'cbb00b12-3226-447a-9fe5-450af4a128c6', dur:30, price:20, group:'cortesmujer' },
-    { family:'simple', label:'Pelo corto', id:'6630467c-d405-4280-bf76-061a6718163c', dur:30, price:19, group:'peinados' },
-    { family:'simple', label:'Pelo medio', id:'02b8a9e3-9a62-413f-9688-08f50994e7b0', dur:30, price:21, group:'peinados' },
-    { family:'simple', label:'Pelo largo', id:'05b840f2-a41e-4f73-9da8-d61e37b6504e', dur:40, price:23, group:'peinados' },
-    { family:'simple', label:'Secado', id:'0ccd37da-a5df-477e-88c1-43ab88c7d83c', dur:15, price:6, group:'peinados' },
-    { family:'simple', label:'Recogido Fiesta', id:'d59adcff-dfa4-4bf3-b524-a8e672ab3e66', dur:60, price:45, group:'peinados' },
-    { family:'simple', label:'Recogido Novia', id:'cf96598a-96e0-4108-8c3e-52a1c913108d', dur:90, price:120, group:'peinados' },
+    { family:'simple', label:'Corte Mujer', id:'43eb401d-c873-400d-8e72-a559fadc3310', variants:true, group:'cortesmujer' },
+    { family:'simple', label:'Corte Nina', id:'cbb00b12-3226-447a-9fe5-450af4a128c6', group:'cortesmujer' },
+    { family:'simple', label:'Pelo corto', id:'6630467c-d405-4280-bf76-061a6718163c', group:'peinados' },
+    { family:'simple', label:'Pelo medio', id:'02b8a9e3-9a62-413f-9688-08f50994e7b0', group:'peinados' },
+    { family:'simple', label:'Pelo largo', id:'05b840f2-a41e-4f73-9da8-d61e37b6504e', group:'peinados' },
+    { family:'simple', label:'Secado', id:'0ccd37da-a5df-477e-88c1-43ab88c7d83c', group:'peinados' },
+    { family:'simple', label:'Recogido Fiesta', id:'d59adcff-dfa4-4bf3-b524-a8e672ab3e66', group:'peinados' },
+    { family:'simple', label:'Recogido Novia', id:'cf96598a-96e0-4108-8c3e-52a1c913108d', group:'peinados' },
     { family:'tratamiento', label:'Botox', id:'1d6059f6-e92e-4d5a-920d-d550339c518f', group:'tratamientos' },
     { family:'tratamiento', label:'Nanoplastia', id:'7a0df23f-f57c-4b6a-b850-a9c2d832f83f', group:'tratamientos' },
     { family:'tratamiento', label:'Kerastase', id:'f4203bdd-6b87-427a-87f1-57f8044c85f4', group:'tratamientos' },
-    { family:'simple', label:'Fusio Dose', id:'8a7d78c4-5e93-4ebb-b168-67580d082110', dur:15, price:12, group:'tratamientos' },
-    { family:'simple', label:'EPRES', id:'68e102e2-edc7-4d2e-926f-ffc79dd159b9', dur:15, price:9.95, group:'tratamientos' },
+    { family:'simple', label:'Fusio Dose', id:'8a7d78c4-5e93-4ebb-b168-67580d082110', group:'tratamientos' },
+    { family:'simple', label:'EPRES', id:'68e102e2-edc7-4d2e-926f-ffc79dd159b9', group:'tratamientos' },
     { family:'simple', label:'Tratamiento K18', id:'203072e2-1847-45d6-b66b-19e296371d10', group:'tratamientos' },
-    { family:'simple', label:'Corte Caballero', id:'94febacf-af47-4393-b483-64063d886b51', dur:30, price:20, group:'caballero' },
-    { family:'simple', label:'Arreglo Corte', id:'722f8db1-faa6-40ba-9e8d-fb6e6d9eeea5', dur:10, price:10, group:'caballero' },
-    { family:'simple', label:'Barba completa', id:'1fc68ab8-dc57-45a8-8578-47c4353a9e00', dur:60, price:14, group:'caballero' },
-    { family:'simple', label:'Arreglo Barba', id:'09c8cfbd-123e-4da2-8c52-fe150f704f15', dur:60, price:9, group:'caballero' },
-    { family:'simple', label:'Afeitado', id:'ab99dd3e-79fa-4599-b822-9d3f9984dc2a', dur:30, price:18, group:'caballero' },
-    { family:'simple', label:'Corte Nino', id:'ee76544a-b513-49ac-a5fe-79822d2375eb', dur:20, price:18, group:'caballero' },
-    { family:'simple', label:'Spa Premium', id:'a38d6b5f-056d-41fb-b606-b6c2e33fc197', dur:90, price:75, group:'spa' }
+    { family:'simple', label:'Corte Caballero', id:'94febacf-af47-4393-b483-64063d886b51', group:'caballero' },
+    { family:'simple', label:'Arreglo Corte', id:'722f8db1-faa6-40ba-9e8d-fb6e6d9eeea5', group:'caballero' },
+    { family:'simple', label:'Barba completa', id:'1fc68ab8-dc57-45a8-8578-47c4353a9e00', group:'caballero' },
+    { family:'simple', label:'Arreglo Barba', id:'09c8cfbd-123e-4da2-8c52-fe150f704f15', group:'caballero' },
+    { family:'simple', label:'Afeitado', id:'ab99dd3e-79fa-4599-b822-9d3f9984dc2a', group:'caballero' },
+    { family:'simple', label:'Corte Nino', id:'ee76544a-b513-49ac-a5fe-79822d2375eb', group:'caballero' },
+    { family:'simple', label:'Spa Premium', id:'a38d6b5f-056d-41fb-b606-b6c2e33fc197', group:'spa' }
   ];
   // Helpers
   function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -553,6 +575,9 @@
       this._packs = [];
       this._settings = { rowHeight:48, titleMode:'servicio', interval:30, staffConfig:{} };
       this._settingsLoaded = false;
+      // v2.2.8: catálogo de precios y duraciones (lectura ServiceCatalog)
+      this._catalogoPrecios = {};     // { [serviceIdWix]: { duration, price } }
+      this._catalogoLoaded = false;
       // Sidebar
       this._cliente = null;
       this._familia = null;
@@ -577,6 +602,8 @@
       this._suppressClick = false;
       // Cierre
       this._datosCierre = null;
+      // v2.2.7: datos extendidos (IVA + clientes + ventas POS)
+      this._datosCierreExt = null;
       // v2.2.0 — Productos
       this._productosCache = null;       // catálogo cargado bajo demanda
       this._productoCart = [];           // carrito mini de la venta en curso
@@ -599,6 +626,7 @@
       this._updateSidebarStatus();
       this._sendToPage('ready', {});
       this._sendToPage('get-staff', {});
+      this._sendToPage('get-catalogo-precios', {});
       setInterval(() => {
         if (this._lastDateChange && Date.now() - this._lastDateChange < 5000) return;
         if (!this.shadowRoot.querySelector('.modal-overlay,.popup-overlay,.settings-overlay.open,.booking-overlay.open')) {
@@ -622,6 +650,12 @@
           this._initStaffConfig();
           if (!this._settingsLoaded) this._sendToPage('get-settings', {});
           else this._sendToPage('get-reservas', { fecha: this._fecha });
+          break;
+        case 'catalogo-precios-data':
+          // v2.2.8: catálogo de precios y duraciones desde ServiceCatalog
+          this._catalogoPrecios = p.mapa || {};
+          this._catalogoLoaded = true;
+          console.log(`${TAG} 📋 Catálogo cargado: ${Object.keys(this._catalogoPrecios).length} servicios`);
           break;
         case 'settings-data':
           if (p.settings) { this._settings = { ...this._settings, ...p.settings }; this._initStaffConfig(); }
@@ -725,21 +759,26 @@
         case 'checkout-invoiceReady': if(p.payload?.invoiceUrl) window.open(p.payload.invoiceUrl,'_blank'); this._toast('Factura ✅'); break;
         case 'checkout-invoiceError': this._toast(p.message==='EMAIL_REQUIRED'?'⚠️ Sin email':'Error: '+p.message); break;
         case 'checkout-cierreData': this._datosCierre = p.datosCierre; this._renderCierre(); break;
+        // v2.2.7: datos extendidos (IVA + clientes + ventas POS)
+        case 'checkout-cierreExtendidoData':
+          this._datosCierreExt = { iva: p.iva, clientesDelDia: p.clientesDelDia, ventasPOS: p.ventasPOS, totalPOS: p.totalPOS };
+          this._renderCierre();
+          break;
         case 'extensionCreada': if(p.ok){this._toast('Extensión ✓');setTimeout(()=>this._reload(),500);}else this._toast('Error');break;
         case 'extensionEliminada': if(p.ok){this._toast('Eliminada ✓');setTimeout(()=>this._reload(),500);}else this._toast('Error');break;
         // Arqueo de caja (v2.2.4)
         case 'cashRegister-data': this._arqueoData=p.data||{}; this._renderArqueo(p.data||{}); this._renderArqueoResumen(p.data||{}); break;
         case 'cashRegister-saved':
           this._toast(p.ok?'Arqueo guardado ✅':'Error: '+(p.error||''));
-          if(p.ok)this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});
+          if(p.ok){this._sendToPage('checkout-cierre',{fechaISO:this._fecha});this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});}
           break;
         case 'cashRegister-closed':
           this._toast(p.ok?'Caja cerrada ✅':'Error: '+(p.error||''));
-          if(p.ok)this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});
+          if(p.ok){this._sendToPage('checkout-cierre',{fechaISO:this._fecha});this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});}
           break;
         case 'cashRegister-movementAdded':
           this._toast(p.ok?'Movimiento registrado ✅':'Error: '+(p.error||''));
-          if(p.ok)this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});
+          if(p.ok){this._sendToPage('checkout-cierre',{fechaISO:this._fecha});this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});}
           break;
         case 'bookingMovido': if(p.ok){this._toast(p.mensaje||'Movido ✓');setTimeout(()=>this._reload(),500);}else this._toast('Error: '+(p.error||''));break;
       }
@@ -817,7 +856,8 @@
       for (const g in groups) {
         svcHTML += `<div class="svc-family ${lblClass[g]||''}">${groups[g]}</div><div class="svc-grid">`;
         for (const b of SVC_BUTTONS.filter(x=>x.group===g)) {
-          svcHTML += `<button class="svc-btn" data-family="${b.family}" data-id="${b.id}" data-label="${esc(b.label)}" ${b.dur?`data-dur="${b.dur}"`:''} ${b.price?`data-price="${b.price}"`:''} ${b.variants?'data-variants="1"':''}>${esc(b.label)}</button>`;
+          // v2.2.8: el click handler lee dur/price del catálogo en runtime. No se inyectan en el DOM.
+          svcHTML += `<button class="svc-btn" data-family="${b.family}" data-id="${b.id}" data-label="${esc(b.label)}" ${b.variants?'data-variants="1"':''}>${esc(b.label)}</button>`;
         }
         svcHTML += `</div>`;
       }
@@ -827,7 +867,7 @@
             <div class="topbar-left"><span class="topbar-title">KAMISUITE Agenda</span><span class="topbar-version">v${VERSION}</span></div>
             <div class="topbar-right">
               <button class="btn btn-icon" id="btnArqueo" title="Arqueo de caja">🏦</button>
-              <button class="btn btn-icon" id="btnCierre" title="Cierre">💰</button>
+              <button class="btn btn-icon" id="btnCierre" title="Cierre del día">💰</button>
               <button class="btn btn-icon" id="btnRefresh" title="Recargar">↻</button>
               <button class="btn btn-icon" id="btnSettings" title="Ajustes">⚙</button>
             </div>
@@ -1151,7 +1191,8 @@
       const slot=ov.querySelector('#addSvcSlot');if(slot.querySelector('.add-svc-panel')){slot.innerHTML='';return;}
       const psid=pack.servicios?.[0]?.staffId||'';let sh='<div style="display:flex;gap:6px;padding-bottom:8px;border-bottom:1px solid #e2e5ea;margin-bottom:8px;"><label style="font-size:11px;color:#9ca3af;">Staff:</label><select id="addSvcStaff" style="flex:1;padding:6px;border-radius:6px;border:1px solid #e2e5ea;font-size:12px;font-family:inherit;">';for(const s of STAFF_IDS)sh+=`<option value="${s.id}"${s.id===psid?' selected':''}>${s.name}</option>`;sh+='</select></div>';
       const groups={};for(const svc of SERVICIOS_ADICIONALES){if(!groups[svc.group])groups[svc.group]=[];groups[svc.group].push(svc);}
-      let sh2='';for(const g in groups){sh2+=`<div class="add-svc-group">${g}</div>`;for(const s of groups[g])sh2+=`<div class="add-svc-item" data-svc-id="${s.id}" data-svc-dur="${s.dur}" data-svc-name="${s.name}"><span>${s.name}</span><span class="add-svc-dur">${s.dur} min</span></div>`;}
+      // v2.2.8: dur desde catálogo (no hardcoded)
+      let sh2='';for(const g in groups){sh2+=`<div class="add-svc-group">${g}</div>`;for(const s of groups[g]){const cat=this._catalogoPrecios[s.id]||{};const dur=cat.duration||'?';sh2+=`<div class="add-svc-item" data-svc-id="${s.id}" data-svc-dur="${dur}" data-svc-name="${s.name}"><span>${s.name}</span><span class="add-svc-dur">${dur} min</span></div>`;}}
       slot.innerHTML=`<div class="add-svc-panel">${sh}${sh2}</div>`;
     }
     _toggleComplementoPanel(ov,pack){
@@ -1448,10 +1489,15 @@
           if(btn.classList.contains('active')){btn.classList.remove('active');this._familia=null;this._servicioId=null;this._servicioLabel=null;this._simpleDur=null;this._simplePrice=null;this._hasVariants=false;this._simpleVariant=null;this.shadowRoot.getElementById('cfgColoracion').classList.remove('visible');this.shadowRoot.getElementById('cfgTratSection').classList.remove('visible');this.shadowRoot.getElementById('cfgSimple').classList.remove('visible');this._updateSidebarStatus();this._renderCalendar();return;}
           this.shadowRoot.querySelectorAll('.svc-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');
           this._familia=btn.dataset.family;this._servicioId=btn.dataset.id;this._servicioLabel=btn.dataset.label;
-          this._simpleDur=btn.dataset.dur?parseInt(btn.dataset.dur):null;this._simplePrice=btn.dataset.price?parseFloat(btn.dataset.price):null;
+          // v2.2.8: leer dur/price del catálogo (no del dataset). Source of truth: ServiceCatalog.
+          {
+            const cat = this._catalogoPrecios[this._servicioId] || {};
+            this._simpleDur = (typeof cat.duration === 'number') ? cat.duration : null;
+            this._simplePrice = (typeof cat.price === 'number') ? cat.price : null;
+          }
           this._hasVariants=btn.dataset.variants==='1';this._simpleVariant=null;
           this._sendToPage('getStaff',{familia:this._familia,serviceId:this._servicioId});
-          if(this._familia==='simple'&&(this._simpleDur===null||this._simplePrice===null))this._sendToPage('getServiceInfo',{serviceId:this._servicioId});
+          if(this._familia==='simple'&&!this._hasVariants&&(this._simpleDur===null||this._simplePrice===null))this._sendToPage('getServiceInfo',{serviceId:this._servicioId});
           this._showServiceConfig();this._updateSidebarStatus();this._renderCalendar();
         });
       });
@@ -1546,7 +1592,7 @@
     // ═══════════════════════════════════════════════════
     // CIERRE
     // ═══════════════════════════════════════════════════
-    _toggleCierre(){const cp=this.shadowRoot.getElementById('cierrePanel');if(cp.classList.contains('visible')){this._closeCierre();}else{this._sendToPage('checkout-cierre',{fechaISO:this._fecha});this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});cp.classList.add('visible');}}
+    _toggleCierre(){const cp=this.shadowRoot.getElementById('cierrePanel');if(cp.classList.contains('visible')){this._closeCierre();}else{this._sendToPage('checkout-cierre',{fechaISO:this._fecha});this._sendToPage('cashRegister-calculate',{fechaISO:this._fecha});this._sendToPage('checkout-cierreExtendido',{fechaISO:this._fecha});cp.classList.add('visible');}}
     _closeCierre(){this.shadowRoot.getElementById('cierrePanel').classList.remove('visible');}
 
     // ═══════════════════════════════════════════════════
@@ -1782,9 +1828,65 @@
         if(!ok){const diff=fin.total-cobrado,signo=diff>0?'+':'';h+=`<div class="cierre-row" style="margin-top:4px;"><span class="cierre-nombre" style="color:#d48a1a;font-size:11px;">Diferencia con cierre operativo: ${signo}${eur(diff)}</span></div>`;h+=`<div class="cierre-row"><span class="cierre-nombre" style="color:#9ca3af;font-size:10px;">Posible cambio de tarifa posterior al cobro</span></div>`;}
         h+=`</div>`;
       }
+
+      // ─── v2.2.7: SECCIONES NUEVAS ─────────────────────────────────────
+      const dcExt = this._datosCierreExt;
+
+      // 1) Desglose fiscal IVA
+      if(dcExt?.iva && Number(dcExt.iva.totalCobrado||0) > 0){
+        const iv = dcExt.iva;
+        h+=`<div class="cierre-section" style="margin-top:12px;border-top:2px solid #6B5B95;padding-top:12px;">`;
+        h+=`<div class="cierre-section-title" style="color:#6B5B95;font-size:13px;">📋 Desglose fiscal (IVA ${iv.vatRate}%)</div>`;
+        h+=`<div class="cierre-row"><span class="cierre-nombre">Total cobrado (IVA incluido)</span><span class="cierre-importe">${eur(iv.totalCobrado)}</span></div>`;
+        if(Number(iv.totalPropinas||0) > 0){
+          h+=`<div class="cierre-row"><span class="cierre-nombre" style="color:#9ca3af;">Propinas (sin IVA)</span><span class="cierre-importe" style="color:#9ca3af;">${eur(iv.totalPropinas)}</span></div>`;
+          h+=`<div class="cierre-row"><span class="cierre-nombre">Total ventas (sin propinas)</span><span class="cierre-importe">${eur(iv.totalSinPropinas)}</span></div>`;
+        }
+        h+=`<div class="cierre-row" style="border-top:1px solid #e2e5ea;padding-top:6px;margin-top:4px;"><span class="cierre-nombre" style="font-weight:700;">Base imponible</span><span class="cierre-importe" style="font-weight:700;">${eur(iv.baseImponible)}</span></div>`;
+        h+=`<div class="cierre-row"><span class="cierre-nombre" style="font-weight:700;color:#6B5B95;">Cuota IVA (${iv.vatRate}%)</span><span class="cierre-importe" style="font-weight:700;color:#6B5B95;">${eur(iv.cuotaIVA)}</span></div>`;
+        h+=`</div>`;
+      }
+
+      // 2) Clientes del día (solo cobrados, ordenados por hora ASC desde backend)
+      if(dcExt?.clientesDelDia && dcExt.clientesDelDia.length > 0){
+        h+=`<div class="cierre-section" style="margin-top:12px;">`;
+        h+=`<div class="cierre-section-title">👥 Clientes del día (${dcExt.clientesDelDia.length})</div>`;
+        for(const cli of dcExt.clientesDelDia){
+          const svcText = (cli.servicios||[]).map(s => esc(s.nombre)).join(', ');
+          const metodoCol = {'Efectivo':'#8F1C5B','Tarjeta':'#4D8F8C','Bizum':'#D18C49','Mixto':'#7B68EE'}[cli.metodoPago] || '#9ca3af';
+          h+=`<div class="cierre-row" style="flex-wrap:wrap;padding:6px 8px;border-bottom:1px solid #f0f1f3;">`;
+          h+=`<span style="font-size:10px;color:#9ca3af;font-weight:600;min-width:36px;">${esc(cli.hora)}</span>`;
+          h+=`<span style="flex:1;min-width:0;margin:0 8px;"><div style="font-weight:600;font-size:11px;">${esc(cli.nombre)}</div><div style="font-size:10px;color:#9ca3af;line-height:1.3;">${svcText}</div></span>`;
+          h+=`<span class="cierre-importe">${eur(cli.total)}</span>`;
+          h+=`<span style="font-size:9px;color:${metodoCol};font-weight:700;margin-left:6px;min-width:46px;text-align:right;">${esc(cli.metodoPago)}</span>`;
+          h+=`</div>`;
+        }
+        h+=`</div>`;
+      }
+
+      // 3) Ventas TIENDA POS (productos standalone sin reserva)
+      if(dcExt?.ventasPOS && dcExt.ventasPOS.length > 0){
+        h+=`<div class="cierre-section" style="margin-top:12px;">`;
+        h+=`<div class="cierre-section-title" style="color:#15803d;">🛒 Ventas Tienda POS (${dcExt.ventasPOS.length})</div>`;
+        for(const v of dcExt.ventasPOS){
+          const metodoCol = {'Efectivo':'#8F1C5B','Tarjeta':'#4D8F8C','Bizum':'#D18C49','Mixto':'#7B68EE'}[v.metodoPago] || '#9ca3af';
+          const qtyStr = v.cantidad > 1 ? ` ×${v.cantidad}` : '';
+          h+=`<div class="cierre-row" style="padding:6px 8px;border-bottom:1px solid #f0f1f3;">`;
+          h+=`<span style="font-size:10px;color:#9ca3af;font-weight:600;min-width:36px;">${esc(v.hora)}</span>`;
+          h+=`<span style="flex:1;min-width:0;margin:0 8px;"><div style="font-weight:600;font-size:11px;">${esc(v.producto)}${qtyStr}</div>${v.nombreCliente?`<div style="font-size:10px;color:#9ca3af;">${esc(v.nombreCliente)}</div>`:''}</span>`;
+          h+=`<span class="cierre-importe">${eur(v.subtotal)}</span>`;
+          h+=`<span style="font-size:9px;color:${metodoCol};font-weight:700;margin-left:6px;min-width:46px;text-align:right;">${esc(v.metodoPago)}</span>`;
+          h+=`</div>`;
+        }
+        h+=`<div class="cierre-row" style="border-top:1px solid #e2e5ea;padding-top:6px;margin-top:4px;"><span class="cierre-nombre" style="font-weight:700;">Total Tienda POS</span><span class="cierre-importe" style="font-weight:700;color:#15803d;">${eur(dcExt.totalPOS||0)}</span></div>`;
+        h+=`</div>`;
+      }
+
+      // v2.2.6: Slot del arqueo (siempre al final, lo rellena _renderArqueoResumen)
       h+=`<div id="cierreArqueoSlot" class="cierre-section" style="grid-column:1/-1;"></div>`;
+
       this.shadowRoot.getElementById('cierreGrid').innerHTML=h;
-      // If arqueo data already loaded, render it
+      // Si los datos del arqueo ya están cargados, repintarlos ahora
       if(this._arqueoData)this._renderArqueoResumen(this._arqueoData);
     }
   } // end class

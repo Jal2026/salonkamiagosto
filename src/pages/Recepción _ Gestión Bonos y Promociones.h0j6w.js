@@ -1,388 +1,128 @@
 // =====================================================
-// KAMISUITE - Editor de Productos Custom - Page Code
-// =====================================================
-// PÁGINA: /gestorbonosypromociones (admin, interna)
-// WIDGET: #htmlGestorBonosPromos (HTML embed con gestorbonosypromociones.html)
-//
-// VERSIÓN: 1.0.1
-// FECHA: 22 de junio de 2026
-//
-// Bridge entre el widget HTML del editor unificado (tres pestañas:
-// PRIME · BONOS · TARJETAS PROMOCIONALES) y el backend
-// productosKamisuiteLogic.web.js v1.0.1.
-//
-// PATRÓN: HTML Component clásico. Copia literal de
-// pagecode_edicioncategorias.js v1.0.0.
-//   · widget.onMessage(event)  → recibir mensajes del widget HTML
-//   · widget.postMessage(obj)  → enviar respuesta al widget HTML
-//   · NUNCA html.on('message') (no funciona en Wix).
-//
-// CHANGELOG:
-// v1.0.1 - · Importa el nuevo listarTodosServiciosActivos del backend.
-//          · Bootstrap paraleliza 7 queries (antes 6): añade carga de
-//            todos los servicios activos para el selector de campañas.
-//          · Nuevo handler 'listarTodosServicios' para refresco manual.
-//          · El payload bootstrap incluye 'todosServicios'.
-//          · Eliminado el handler 'uploadConfigImage' SOLO conceptualmente:
-//            el front v1.0.1 ya no envía 'saveConfig' con promoCardsActive
-//            (cada campaña tiene su toggle), pero el bridge no necesita
-//            cambios — el backend acepta payload parcial y simplemente
-//            no toca el campo si no llega.
-// v1.0.0 - Versión inicial.
-//
-// MENSAJES ENTRANTES (widget → page code), discriminados por msg.type:
-//   ready, getConfig, saveConfig, uploadConfigImage, uploadCampaignImage,
-//   listarServiciosConBono, listarTodosServicios (NUEVO v1.0.1),
-//   listarPromoCampaigns, crearPromoCampaign, actualizarPromoCampaign,
-//   eliminarPromoCampaign,
-//   listarPrimeMemberships, listarVouchers, listarPromoCards,
-//   revocarPrimeMembership, revocarVoucher, revocarPromoCard.
-//
-// MENSAJES SALIENTES (page code → widget):
-//   bootstrap, config, configSaved, configSaveError,
-//   imageUploaded, imageUploadError,
-//   serviciosConBono, todosServicios (NUEVO v1.0.1),
-//   campaigns, campaignSaved, campaignDeleted, campaignError,
-//   memberships, vouchers, cards,
-//   revoked, revokeError, error.
-//
-// AJUSTE PRE-PUBLICACIÓN: confirmar el ID exacto del HTML Component en el
-// editor Wix. La constante WIDGET_ID asume '#htmlGestorBonosPromos'.
+// PAGE CODE — Página Promociones KAMISUITE
+// Conecta widget promo_widget_v1.html con CMS PromoColor
+// ─────────────────────────────────────────────────────
+// CAMBIOS v1.1:
+// - FIX: Casting explícito de isActive a boolean (=== true)
+//   Evita que valores falsy/undefined pasen al CMS como no-boolean.
+// - ADD: Log de diagnóstico de isActive antes de guardar.
 // =====================================================
 
-import {
-  getProductosConfig,
-  actualizarProductosConfig,
-  uploadImagenProductos,
-  listarServiciosConBono,
-  listarTodosServiciosActivos,
-  listarPromoCampaigns,
-  crearPromoCampaign,
-  actualizarPromoCampaign,
-  eliminarPromoCampaign,
-  listarPrimeMembershipsEmitidas,
-  listarVouchersEmitidos,
-  listarPromoCardsEmitidas,
-  revocarPrimeMembership,
-  revocarVoucher,
-  revocarPromoCard
-} from 'backend/productosKamisuiteLogic.web';
+import wixData from 'wix-data';
 
-const TAG = '[GestorBonosPromos v1.0.1]';
-const WIDGET_ID = '#htmlGestorBonosPromos';
+const COLECCION = 'PromoColor';
 
-$w.onReady(async function () {
-  console.log(`${TAG} ✅ Página cargada`);
+$w.onReady(function () {
+  const widget = $w('#htmlPromo'); // ID del HTML iframe en la página
 
-  const widget = $w(WIDGET_ID);
-
-  widget.onMessage(async (event) => {
+  widget.onMessage((event) => {
     const msg = event.data;
-    if (!msg || typeof msg !== 'object') return;
+    if (!msg || !msg.type) return;
 
-    console.log(`${TAG} 📩 ${msg.type || '(sin type)'}`);
+    switch (msg.type) {
 
-    try {
-      switch (msg.type) {
+      case 'cargarPromos':
+        cargarPromos(widget);
+        break;
 
-        case 'ready':
-          await enviarBootstrap(widget);
-          break;
+      case 'guardarPromo':
+        guardarPromo(widget, msg.data.promo);
+        break;
 
-        case 'getConfig':
-          await enviarConfig(widget);
-          break;
-
-        case 'saveConfig':
-          await guardarConfig(widget, msg.payload);
-          break;
-
-        case 'uploadConfigImage':
-          await subirImagenConfig(widget, msg.payload);
-          break;
-
-        case 'uploadCampaignImage':
-          await subirImagenCampaign(widget, msg.payload);
-          break;
-
-        case 'listarServiciosConBono':
-          await enviarServiciosConBono(widget);
-          break;
-
-        case 'listarTodosServicios':
-          await enviarTodosServicios(widget);
-          break;
-
-        case 'listarPromoCampaigns':
-          await enviarCampaigns(widget);
-          break;
-
-        case 'crearPromoCampaign':
-          await crearCampaign(widget, msg.payload);
-          break;
-
-        case 'actualizarPromoCampaign':
-          await actualizarCampaign(widget, msg.payload);
-          break;
-
-        case 'eliminarPromoCampaign':
-          await eliminarCampaign(widget, msg.payload);
-          break;
-
-        case 'listarPrimeMemberships':
-          await enviarMemberships(widget, msg.payload);
-          break;
-
-        case 'listarVouchers':
-          await enviarVouchers(widget, msg.payload);
-          break;
-
-        case 'listarPromoCards':
-          await enviarCards(widget, msg.payload);
-          break;
-
-        case 'revocarPrimeMembership':
-          await revocarMembershipHandler(widget, msg.payload);
-          break;
-
-        case 'revocarVoucher':
-          await revocarVoucherHandler(widget, msg.payload);
-          break;
-
-        case 'revocarPromoCard':
-          await revocarCardHandler(widget, msg.payload);
-          break;
-
-        default:
-          console.warn(`${TAG} ⚠️ Mensaje no reconocido:`, msg.type);
-      }
-
-    } catch (err) {
-      console.error(`${TAG} ❌ Error procesando ${msg.type}:`, err);
-      widget.postMessage({ type: 'error', message: err.message || String(err) });
+      case 'crearPromo':
+        crearPromo(widget, msg.data.promo);
+        break;
     }
   });
+
+  // Carga inicial
+  cargarPromos(widget);
 });
 
-// ═══════════════════════════════════════════════════
-// BOOTSTRAP — carga inicial de todo el estado
-// ═══════════════════════════════════════════════════
-async function enviarBootstrap(widget) {
-  console.log(`${TAG} 🚀 Bootstrap`);
+// ═══ CARGAR PROMOS ═══
+async function cargarPromos(widget) {
+  try {
+    const result = await wixData.query(COLECCION)
+      .limit(50)
+      .find({ suppressAuth: true });
 
-  const [
-    rConfig,
-    rServiciosBono,
-    rTodosServicios,
-    rCampaigns,
-    rMemberships,
-    rVouchers,
-    rCards
-  ] = await Promise.all([
-    getProductosConfig(),
-    listarServiciosConBono(),
-    listarTodosServiciosActivos(),
-    listarPromoCampaigns(),
-    listarPrimeMembershipsEmitidas({}),
-    listarVouchersEmitidos({}),
-    listarPromoCardsEmitidas({})
-  ]);
+    const promos = result.items || [];
+    console.log(`[Promo Page] Promos cargadas: ${promos.length}`);
 
-  widget.postMessage({
-    type: 'bootstrap',
-    payload: {
-      config: rConfig.success ? rConfig.config : null,
-      serviciosConBono: rServiciosBono.success ? rServiciosBono.servicios : [],
-      todosServicios: rTodosServicios.success ? rTodosServicios.servicios : [],
-      campaigns: rCampaigns.success ? rCampaigns.campaigns : [],
-      memberships: rMemberships.success ? rMemberships.memberships : [],
-      vouchers: rVouchers.success ? rVouchers.vouchers : [],
-      cards: rCards.success ? rCards.cards : []
+    widget.postMessage({
+      type: 'promosLoaded',
+      data: { promos }
+    });
+
+  } catch (err) {
+    console.error('[Promo Page] Error cargando promos:', err);
+    widget.postMessage({
+      type: 'error',
+      data: { message: 'Error cargando promociones: ' + err.message }
+    });
+  }
+}
+
+// ═══ GUARDAR PROMO ═══
+async function guardarPromo(widget, promo) {
+  try {
+    if (!promo._id) {
+      throw new Error('Promo sin _id, no se puede actualizar');
     }
-  });
 
-  console.log(`${TAG} ✅ Bootstrap enviado`);
-}
+    // Leer el registro actual para no perder campos
+    const actual = await wixData.get(COLECCION, promo._id, { suppressAuth: true });
 
-// ═══════════════════════════════════════════════════
-// CONFIG (KamisuiteProductsConfig)
-// ═══════════════════════════════════════════════════
-async function enviarConfig(widget) {
-  const r = await getProductosConfig();
-  if (r.success) {
-    widget.postMessage({ type: 'config', payload: { config: r.config } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
+    // Actualizar solo los campos editables
+    actual.colorName = promo.colorName;
+    actual.discountPercent = promo.discountPercent;
+    actual.discountAmount = promo.discountAmount;
 
-async function guardarConfig(widget, payload) {
-  const r = await actualizarProductosConfig(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'configSaved', payload: { config: r.config } });
-  } else {
-    widget.postMessage({ type: 'configSaveError', message: r.error });
-  }
-}
+    // ─────────────────────────────────────────────────────────
+    // v1.1 FIX: Casting explícito a boolean
+    // postMessage puede serializar false como undefined/null.
+    // Forzamos comparación estricta para garantizar boolean real.
+    // ─────────────────────────────────────────────────────────
+    actual.isActive = promo.isActive === true;
+    console.log(`[Promo Page] isActive que se va a guardar:`, actual.isActive, typeof actual.isActive);
 
-// ═══════════════════════════════════════════════════
-// UPLOAD DE IMÁGENES
-// ═══════════════════════════════════════════════════
-async function subirImagenConfig(widget, payload) {
-  const { base64Data, fileName, mimeType, campo } = payload || {};
-  const r = await uploadImagenProductos({
-    base64Data,
-    fileName,
-    mimeType,
-    target: 'config',
-    campo: campo || 'primeImage'
-  });
-  if (r.ok) {
+    // Campos idActivo* dinámicos — también casting explícito
+    for (const key of Object.keys(promo)) {
+      if (key.startsWith('idActivo')) {
+        actual[key] = promo[key] === true;
+      }
+    }
+
+    await wixData.update(COLECCION, actual, { suppressAuth: true });
+    console.log(`[Promo Page] Promo guardada: ${actual.colorName} | isActive=${actual.isActive}`);
+
+    widget.postMessage({ type: 'promoGuardada', data: {} });
+
+  } catch (err) {
+    console.error('[Promo Page] Error guardando promo:', err);
     widget.postMessage({
-      type: 'imageUploaded',
-      payload: { target: 'config', campo: campo || 'primeImage', fileUrl: r.fileUrl, publicUrl: r.publicUrl }
+      type: 'error',
+      data: { message: 'Error guardando: ' + err.message }
     });
-  } else {
-    widget.postMessage({ type: 'imageUploadError', message: r.error });
   }
 }
 
-async function subirImagenCampaign(widget, payload) {
-  const { campaignId, base64Data, fileName, mimeType } = payload || {};
-  const r = await uploadImagenProductos({
-    base64Data,
-    fileName,
-    mimeType,
-    target: 'campaign',
-    campo: 'image',
-    campaignId
-  });
-  if (r.ok) {
+// ═══ CREAR PROMO ═══
+async function crearPromo(widget, promo) {
+  try {
+    // Quitar _id si existe para que Wix genere uno nuevo
+    delete promo._id;
+
+    const inserted = await wixData.insert(COLECCION, promo, { suppressAuth: true });
+    console.log(`[Promo Page] Promo creada: ${inserted._id}`);
+
+    widget.postMessage({ type: 'promoCreada', data: {} });
+
+  } catch (err) {
+    console.error('[Promo Page] Error creando promo:', err);
     widget.postMessage({
-      type: 'imageUploaded',
-      payload: { target: 'campaign', campo: 'image', campaignId, fileUrl: r.fileUrl, publicUrl: r.publicUrl }
+      type: 'error',
+      data: { message: 'Error creando: ' + err.message }
     });
-  } else {
-    widget.postMessage({ type: 'imageUploadError', message: r.error });
-  }
-}
-
-// ═══════════════════════════════════════════════════
-// SERVICIOS
-// ═══════════════════════════════════════════════════
-async function enviarServiciosConBono(widget) {
-  const r = await listarServiciosConBono();
-  if (r.success) {
-    widget.postMessage({ type: 'serviciosConBono', payload: { servicios: r.servicios } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-async function enviarTodosServicios(widget) {
-  const r = await listarTodosServiciosActivos();
-  if (r.success) {
-    widget.postMessage({ type: 'todosServicios', payload: { servicios: r.servicios } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-// ═══════════════════════════════════════════════════
-// PROMO CAMPAIGNS (CRUD)
-// ═══════════════════════════════════════════════════
-async function enviarCampaigns(widget) {
-  const r = await listarPromoCampaigns();
-  if (r.success) {
-    widget.postMessage({ type: 'campaigns', payload: { campaigns: r.campaigns } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-async function crearCampaign(widget, payload) {
-  const r = await crearPromoCampaign(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'campaignSaved', payload: { campaign: r.campaign } });
-  } else {
-    widget.postMessage({ type: 'campaignError', message: r.error });
-  }
-}
-
-async function actualizarCampaign(widget, payload) {
-  const r = await actualizarPromoCampaign(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'campaignSaved', payload: { campaign: r.campaign } });
-  } else {
-    widget.postMessage({ type: 'campaignError', message: r.error });
-  }
-}
-
-async function eliminarCampaign(widget, payload) {
-  const r = await eliminarPromoCampaign(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'campaignDeleted', payload: { _id: r._id } });
-  } else {
-    widget.postMessage({ type: 'campaignError', message: r.error });
-  }
-}
-
-// ═══════════════════════════════════════════════════
-// LISTADOS DE EMISIONES
-// ═══════════════════════════════════════════════════
-async function enviarMemberships(widget, filtros) {
-  const r = await listarPrimeMembershipsEmitidas(filtros || {});
-  if (r.success) {
-    widget.postMessage({ type: 'memberships', payload: { memberships: r.memberships } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-async function enviarVouchers(widget, filtros) {
-  const r = await listarVouchersEmitidos(filtros || {});
-  if (r.success) {
-    widget.postMessage({ type: 'vouchers', payload: { vouchers: r.vouchers } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-async function enviarCards(widget, filtros) {
-  const r = await listarPromoCardsEmitidas(filtros || {});
-  if (r.success) {
-    widget.postMessage({ type: 'cards', payload: { cards: r.cards } });
-  } else {
-    widget.postMessage({ type: 'error', message: r.error });
-  }
-}
-
-// ═══════════════════════════════════════════════════
-// REVOCACIÓN MANUAL
-// ═══════════════════════════════════════════════════
-async function revocarMembershipHandler(widget, payload) {
-  const r = await revocarPrimeMembership(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'revoked', payload: { kind: 'prime', _id: r._id, status: r.status } });
-  } else {
-    widget.postMessage({ type: 'revokeError', message: r.error, kind: 'prime' });
-  }
-}
-
-async function revocarVoucherHandler(widget, payload) {
-  const r = await revocarVoucher(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'revoked', payload: { kind: 'voucher', _id: r._id, status: r.status } });
-  } else {
-    widget.postMessage({ type: 'revokeError', message: r.error, kind: 'voucher' });
-  }
-}
-
-async function revocarCardHandler(widget, payload) {
-  const r = await revocarPromoCard(payload || {});
-  if (r.success) {
-    widget.postMessage({ type: 'revoked', payload: { kind: 'card', _id: r._id, status: r.status } });
-  } else {
-    widget.postMessage({ type: 'revokeError', message: r.error, kind: 'card' });
   }
 }

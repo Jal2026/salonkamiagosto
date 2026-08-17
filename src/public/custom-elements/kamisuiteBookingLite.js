@@ -4,8 +4,377 @@
  * Ubicación en Wix: public/custom-elements/
  * Tag name: kamisuite-booking-lite
  * Página:   /recepcionpromobile
- * VERSION:  0.3.9
- * FECHA:    26 Junio 2026
+ * VERSION:  0.6.3
+ * FECHA:    6 Agosto 2026
+ *
+ * v0.6.3 — El botón "Añadir otro servicio" se mueve JUNTO al servicio
+ *   elegido, justo debajo de su panel de addons.
+ *
+ *   En v0.6.2 se pintaba al final del paso 2, después de todos los grupos
+ *   del catálogo: había que hacer scroll hasta abajo del todo para verlo,
+ *   lo que en móvil equivale a que no exista. Ahora aparece pegado a la
+ *   fila del servicio seleccionado, que es donde está mirando el operador
+ *   cuando acaba de elegirlo.
+ *
+ * v0.6.2 — El botón "Añadir otro servicio" se pinta SIEMPRE en el paso 2,
+ *   deshabilitado mientras no haya servicio elegido. En v0.6.1 estaba
+ *   condicionado a `if (b.service)`, así que no existía en el DOM hasta
+ *   elegir servicio. Ahora está siempre presente: la función es visible
+ *   desde el primer momento y no depende de ninguna condición de render.
+ *
+ * v0.6.1 — FIX: el botón "Añadir otro servicio" no aparecía en servicios
+ *   sin variantes ni complementos.
+ *
+ *   En v0.6.0 el botón se pintaba dentro de _renderAddonPanel, que hace
+ *   `return ''` cuando el servicio no tiene variantes NI complementos
+ *   (`if (!variantes.length && !complementos.length) return '';`). En
+ *   Corte Femenino y demás servicios simples —justo los más habituales
+ *   para encadenar cortes de familia— el panel entero no se pinta y el
+ *   botón se iba con él.
+ *
+ *   Ahora el botón se pinta al final de _renderStepService, condicionado
+ *   solo a que haya un servicio elegido, y su listener vive junto al
+ *   resto de listeners del paso 2 (no en _wireAddonEvents, que solo se
+ *   ejecuta cuando hay panel).
+ *
+ * v0.6.0 — ARMADO MÚLTIPLE. Varios servicios en una sola cita.
+ *
+ *   CASO DE USO (Jal): una madre reserva su corte + el corte del hijo +
+ *   el de la hija. Los tres servicios se PINTAN como bloques propios en
+ *   el calendario, pero pertenecen a UNA sola reserva → un único cobro.
+ *
+ *   PARIDAD LITERAL CON RECEPCIÓN PRO DESKTOP v1.1.81:
+ *   La primera línea crea la cita con crearPackReserva. Las siguientes se
+ *   añaden a ESA MISMA reserva con agregarServicioReserva. El backend
+ *   encadena cada servicio nuevo a partir de MAX(end) de las fases
+ *   ocupantes, así que quedan secuenciales con el mismo profesional.
+ *   Cada fase ocupante se pinta como su propia .appt — el calendario no
+ *   necesita ningún cambio.
+ *
+ *   CAMBIOS EN EL WIDGET:
+ *   1) Estado nuevo en _emptyBooking: `lineas[]` (servicios ya añadidos),
+ *      `cadenaPendiente[]` y `cadenaReservaId`. `service`, `variantIdx`,
+ *      `complementosSel` y `exclusivosSel` pasan a ser la LÍNEA EN
+ *      EDICIÓN.
+ *   2) Helpers nuevos: _complementosDeLinea (extraído de _confirmBooking
+ *      v0.5.5 sin cambios de lógica), _varianteSelDeLinea, _precioDeLinea,
+ *      _labelDeLinea, _añadirLineaActual, _quitarLinea, _totalLineas,
+ *      _numLineas.
+ *   3) Paso 2: sobre el catálogo se pintan las líneas ya añadidas, cada
+ *      una con su precio y un ✕ para quitarla. Dentro del panel de addons,
+ *      botón "+ Añadir otro servicio a esta cita".
+ *   4) El botón Continuar del paso 2 cierra automáticamente la línea en
+ *      edición. El flujo de UN servicio queda EXACTAMENTE igual que antes:
+ *      elegir servicio → Continuar.
+ *   5) Paso 4: resumen con todas las líneas, su precio y el total, con la
+ *      nota "N servicios · un solo cobro".
+ *   6) _confirmBooking envía la línea 1 y deja el resto en
+ *      cadenaPendiente. _onReservaCreada detecta cola pendiente y arranca
+ *      la cadena en vez de cerrar. Case nuevo 'servicio-agregado' la
+ *      consume una a una. El botón informa: "Añadiendo servicio 2 de 3…".
+ *   7) Si una línea de la cadena falla, la cita contenedora YA existe: se
+ *      cierra el sheet, se avisa y se refresca la agenda para que el
+ *      operador vea qué entró y decida.
+ *
+ *   PAREJA OBLIGATORIA: page code v0.3.9, que añade el handler
+ *   'agregar-servicio' → agregarServicioReserva → 'servicio-agregado'.
+ *   Mismos nombres de mensaje que Desktop.
+ *
+ *   Cero cambios en el backend: agregarServicioReserva (recepcionProLogic
+ *   v1.0.43+) ya acepta varianteSel y complementosSetupUid.
+ *
+ * v0.5.5 — El cliente sobrevive TAMBIÉN a la reserva creada.
+ *
+ *   SÍNTOMA (Jal, 6-ago-2026): al pintar la reserva se reseteaba el
+ *   cliente. Caso de uso real: una madre reserva su corte + el corte del
+ *   hijo + el de la hija. Tras cada reserva había que volver a buscarla.
+ *
+ *   CAUSA: regresión introducida en v0.5.4, que limpiaba
+ *   _clientePendiente en _onReservaCreada "para que la siguiente reserva
+ *   arranque limpia". Ese razonamiento ignoraba el encadenado familiar.
+ *
+ *   PARIDAD CON DESKTOP (verificada en recepcionProCMS_widget, case
+ *   'reservaCreada'): al crear la reserva llama a _desarmar() —que resetea
+ *   el SERVICIO armado— pero NUNCA toca this._cliente. El cliente vive en
+ *   el aside y persiste hasta que el operador lo quita con #cliRm. Lite
+ *   Mobile hacía lo contrario.
+ *
+ *   CAMBIOS:
+ *   1) _onReservaCreada llama a _guardarClientePendiente(true) en lugar de
+ *      limpiar. El cliente queda disponible para la siguiente apertura del
+ *      sheet.
+ *   2) _guardarClientePendiente acepta `forzar`: guarda aunque b.done sea
+ *      true (tras reserva creada).
+ *   3) CLIENTE_TTL_MS de 5 → 15 min. Encadenar tres reservas eligiendo
+ *      servicio, empleado y hora en cada una se pasa de 5 minutos. El `ts`
+ *      se refresca en cada guardado: la ventana cuenta desde la última
+ *      reserva, no desde la primera.
+ *
+ *   El chip del cliente con botón "Quitar" (v0.5.4) sigue siendo la
+ *   salvaguarda: el operador ve siempre a quién le está reservando y puede
+ *   soltarlo en un toque.
+ *
+ * v0.5.4 — El cliente elegido sobrevive al cierre accidental del sheet.
+ *
+ *   SÍNTOMA (Jal, 6-ago-2026): eliges cliente en el paso 1, pasas al paso 2
+ *   a buscar servicio, cierras con la ✕ (a menudo sin querer) y al volver
+ *   a abrir el sheet el cliente ha desaparecido. Hay que buscarlo otra vez.
+ *
+ *   CAUSA: _openBookingSheet arranca con `this._booking = this._emptyBooking()`,
+ *   que arrasa el estado completo — cliente incluido.
+ *
+ *   CAMBIOS:
+ *   1) _closeBookingSheet llama a _guardarClientePendiente(): si el sheet
+ *      se cierra SIN haber completado la reserva (b.done === false) y hay
+ *      un cliente elegido (real, nuevo o provisional), se guarda en
+ *      this._clientePendiente junto con la query y un timestamp.
+ *   2) _openBookingSheet lo restaura si sigue vigente (CLIENTE_TTL_MS =
+ *      5 min). Solo el CLIENTE: servicio, complementos, empleado y hora
+ *      se resetean siempre, porque la nueva apertura suele venir de tocar
+ *      otro slot del calendario con otra hora y otro empleado.
+ *   3) CHIP DEL CLIENTE REAL en el step 1, con botón "Quitar". Hasta ahora
+ *      el cliente elegido solo se veía como fila resaltada dentro de la
+ *      lista de resultados; si la lista dejaba de pintarse, parecía que no
+ *      había cliente. El provisional ya tenía chip desde v0.4.0, el real
+ *      no: asimetría corregida.
+ *      Esto NO es cosmético: es lo que hace segura la restauración. Sin la
+ *      señal visual, el operador podría reabrir el sheet con un cliente de
+ *      hace rato y reservarle la cita a la persona equivocada.
+ *   4) La caducidad de 5 min y el botón "Quitar" limpian
+ *      _clientePendiente. Al crear la reserva con éxito también se limpia:
+ *      la siguiente arranca de cero.
+ *
+ *   Cero cambios en page code, backend, contrato de mensajes y resto del
+ *   flujo de reserva.
+ *
+ * v0.5.3 — GUARDA `typeof customElements === 'undefined'` al entrar al IIFE.
+ *   Sin ella, evaluar este archivo en un contexto sin DOM lanza
+ *   "ReferenceError: customElements is not defined" en la PRIMERA
+ *   sentencia y aborta el script entero, incluido el customElements.define
+ *   final. Error observado en producción KALÓNICE (6-ago-2026 02:05:33).
+ *   Deuda preexistente desde v0.1.0; misma carencia en kamisuiteAgenda.js,
+ *   kamisuiteMobile.js y akiraConsole.js. Cambio aditivo puro: en
+ *   navegador el comportamiento es idéntico a v0.5.2.
+ *
+ * v0.5.2 — FIX de la regresión introducida por v0.5.1 (agenda vacía al cargar).
+ *
+ *   SÍNTOMA: tras desplegar v0.5.1 la agenda ya no cargaba nunca en la
+ *   primera pantalla. Había que avanzar al día siguiente y volver a hoy
+ *   para ver las citas.
+ *
+ *   CAUSA (verificada en logs de producción KALÓNICE 6-ago-2026 00:01):
+ *   entre "🎯 Init OK" y la navegación manual del operador no aparece
+ *   ningún "📅 <fecha>: N packs" ni el "📦 Pre-carga iniciada: 30 días"
+ *   que sí figuraba en los logs previos al despliegue. La cola de
+ *   peticiones que dispara case 'init-data' no se envió.
+ *
+ *   La responsable es la guarda `_initDuplicado` que v0.5.1 añadió para
+ *   evitar repetir el preload de 30 días cuando un retry de 'ready' se
+ *   cruzaba con el 'init-data' original. Optimización defensiva que acabó
+ *   suprimiendo la carga inicial de la agenda.
+ *
+ *   CAMBIOS:
+ *   1) ELIMINADA la guarda `_initDuplicado`. Las tres peticiones de cola
+ *      ('get-reservas-dia', 'preload-reservas', 'get-settings') se envían
+ *      SIEMPRE en cada 'init-data', como en v0.5.0. No volver a
+ *      condicionarlas: un preload repetido cuesta 30 queries; no enviarlas
+ *      cuesta una agenda en blanco.
+ *   2) El rescate de remontaje pide además 'get-reservas-dia', para que un
+ *      remontaje del custom element no deje las columnas pintadas y sin
+ *      citas hasta el siguiente tick de 10 s.
+ *
+ *   El resto de v0.5.1 (retry de 'ready', disconnectedCallback, handles de
+ *   timers) se mantiene íntegro: es el fix real del cuelgue en
+ *   "Cargando agenda…".
+ *
+ * v0.5.1 — FIX "Cargando agenda…" colgado aleatoriamente en la primera carga.
+ *
+ *   SÍNTOMA (reportado por Jal 6-ago-2026): la pantalla se queda en
+ *   "Cargando agenda…" indefinidamente. A veces carga, a veces no. Es
+ *   aleatorio y se resuelve recargando la página.
+ *
+ *   DIAGNÓSTICO (verificado en logs de producción KALÓNICE 01:06 del
+ *   6-ago-2026, no especulado):
+ *
+ *   1) El evento 'ready' de connectedCallback NUNCA llega al page code.
+ *      En los logs solo aparece UN "📱 CE listo" por carga, 3 ms después
+ *      de "👂 Listener activo" — es el kickoff proactivo del final del
+ *      $w.onReady del page code, no el evento del custom element. El
+ *      dispatchEvent del connectedCallback se emite antes de que
+ *      _el.on('booking-message') exista y se pierde sin dejar rastro.
+ *      Mismo fenómeno documentado en el widget Desktop
+ *      recepcionProCMS_widget v1.1.46 y v1.1.55.
+ *
+ *   2) Por tanto, la carga de la agenda dependía al 100% de que el
+ *      kickoff proactivo del page code ganase la carrera de tiempos
+ *      contra el montaje del custom element. Sin red de seguridad: si la
+ *      pierde (setAttribute('response') disparado antes de que el
+ *      attributeChangedCallback esté armado), 'init-data' se pierde y NO
+ *      hay segundo intento.
+ *
+ *   3) Sin 'init-data' no hay salida del placeholder. _renderCalendarHeader()
+ *      es la ÚNICA función que sustituye el <div class="cal-loading">
+ *      del shell, y solo se invoca desde case 'init-data' y case
+ *      'settings-data' — y 'settings-data' solo se pide DENTRO de
+ *      case 'init-data'. Cuelgue permanente para esa carga.
+ *
+ *   4) El refresh de 10 s NO rescataba. En los logs de la sesión colgada
+ *      se ve el widget pidiendo datos cada 10 s exactos y el page code
+ *      respondiendo "📅 2026-08-06: 54 packs"… con la pantalla en
+ *      "Cargando agenda…". Motivo: _renderCalendarBody() hace
+ *      getElementById('calBody') y sale con return en seco porque el
+ *      header nunca se pintó y #calBody no existe. Los 54 packs se
+ *      descartaban en silencio cada 10 segundos.
+ *
+ *   CAMBIOS QUIRÚRGICOS (patrón copiado LITERAL del widget Desktop
+ *   recepcionProCMS_widget, en producción desde v1.1.55):
+ *
+ *   1) Constructor: nuevos flags _initRecibido, _readyTries y handles
+ *      _readyTimer / _refreshTimer inicializados a null.
+ *
+ *   2) connectedCallback: retry loop de 'ready' cada 700 ms hasta recibir
+ *      'init-data' o agotar 12 intentos (mismo intervalo y mismo tope que
+ *      el _readyTimer del Desktop). Con log por reintento.
+ *
+ *   3) case 'init-data': marca this._initRecibido = true y corta el retry.
+ *
+ *   4) disconnectedCallback NUEVO. Hasta v0.5.0 el setInterval de refresh
+ *      de 10 s se creaba en CADA connectedCallback sin guardarse ni
+ *      limpiarse: si Wix desconecta y reconecta el custom element
+ *      (habitual durante hidratación/relayout, documentado en Desktop
+ *      v1.1.66) se acumulaban intervals huérfanos, cada uno pidiendo
+ *      reservas cada 10 s. Ahora el handle se guarda en _refreshTimer y
+ *      ambos timers se limpian al desconectar.
+ *
+ *   5) connectedCallback: rescate de remontaje (patrón Desktop v1.1.66).
+ *      Si al montar YA hay staff en memoria (_staff.length > 0), se
+ *      repinta el calendario con lo que hay en vez de dejar el placeholder
+ *      estático que acaba de repintar _renderShell. En el primer montaje
+ *      _staff está vacío y no hace nada — comportamiento idéntico al
+ *      actual.
+ *
+ *   PAREJA OBLIGATORIA: page code v0.3.6. Sin él, cada reintento de
+ *   'ready' dispararía un handleReady completo (getStaffColumnas +
+ *   getCatalogoReserva + cargarTodosContactos = 4.619 contactos, ~12 s de
+ *   backend). El v0.3.6 hace handleReady idempotente y añade guarda de
+ *   reentrada al cache de contactos: un reintento cuesta un setAttribute,
+ *   no una tanda de queries.
+ *
+ *   CERO CAMBIOS en: contrato de mensajes, backend recepcionProLogic
+ *   v1.0.49, CSS, lógica de reserva, bloqueos, variantes, settings,
+ *   month picker, detail sheet y cualquier otro handler.
+ *
+ * v0.5.0 — VARIANTE BASE del principal + envío de varianteSel al backend.
+ *   Doble fix necesario para que servicios simple_variantes (Corte Mujer
+ *   M/L/XL, Corte Niño S/M/L, etc.) se reserven con precio/duración
+ *   correcta desde Lite Mobile.
+ *
+ *   Bug 1: el selector de variante nunca ha incluido la BASE del
+ *   catálogo. Solo iteraba `svc.variantes.forEach((v, i))` — es decir,
+ *   pintaba L, XL, XXL pero NUNCA la M base (`svc.price` + `svc.duration`
+ *   del propio ServiceCatalog). El operador estaba obligado a elegir
+ *   siempre una variante del array; no podía reservar la base. Documenta-
+ *   do en Bitácora 03Jul2026 §2.3 para bonos: "el precio base del
+ *   servicio (ServiceCatalog.price) actúa como variante M, las variantes
+ *   del array son adicionales". Bonos ya se corrigió el 3 Jul; aquí se
+ *   aplica el mismo patrón.
+ *
+ *   Bug 2: aunque el operador eligiera L o XL, el widget NO enviaba
+ *   varianteSel en el payload de 'crear-reserva'. Backend crearPackReserva
+ *   v1.0.25 (desplegado desde 19 Jun) YA acepta varianteSel {idx, label,
+ *   price, duration} para aplicar precio/duración de la variante — pero
+ *   Lite Mobile nunca lo usó. La reserva se creaba SIEMPRE con precio
+ *   base aunque en la UI se hubiera elegido XL. Paridad rota con
+ *   Recepción PRO Desktop v1.1.43 que sí lo envía desde entonces.
+ *
+ *   Cambios quirúrgicos:
+ *   1) _emptyBooking: variantIdx: 0 → variantIdx: -1 (base seleccionada).
+ *   2) _renderStepService (row click): reset variantIdx a -1 al cambiar
+ *      de servicio.
+ *   3) _renderAddonPanel: chip "base" antes del forEach de variantes,
+ *      pintando svc.label + svc.duration + svc.price. Cada chip de
+ *      variante muestra ahora también precio y duración (antes solo
+ *      label). Data-vi=-1 en el chip base; data-vi=i en los del array.
+ *   4) _wireAddonEvents: handler acepta -1 correctamente
+ *      (Number.isInteger + fallback -1 en vez de || 0).
+ *   5) _confirmBooking: payload envía varianteSel {idx, label, price,
+ *      duration} SOLO si variantIdx >= 0. Si variantIdx === -1 (base),
+ *      NO se envía → backend usa precio/duración base como siempre
+ *      (retrocompatible).
+ *   6) _renderConfirmStep: en el resumen, "Variante: X" solo si el
+ *      operador eligió variante ≠ base. Antes forzaba mostrar la
+ *      variante 0 (bug al reflejar el paso 1 en la confirmación).
+ *
+ *   Cero cambios en backend recepcionProLogic v1.0.36 (crearPackReserva
+ *   v1.0.25+ ya soporta varianteSel), en pagecode v0.3.5 (contrato de
+ *   mensajes intacto), en el CSS (solo un chip más en la fila existente,
+ *   sin clases nuevas). Cero impacto en servicios sin variantes
+ *   (variantes.length === 0 → no se pinta bloque, mismo comportamiento).
+ *
+ * v0.4.0 — Cuatro mejoras + cabecera "LITE" (motor recepcionProLogic v1.0.36,
+ *   patrón literal del Desktop recepcionProCMS_widget v1.1.60 para grupo
+ *   exclusivo y cliente provisional).
+ *
+ *   1) GRUPO EXCLUSIVO en el step 2. Cuando el servicio armado tiene
+ *      items tipo:'exclusivo' en su svc.mapeoFases (chip rojo del editor
+ *      v1.14.0+, patrón Desktop v1.1.59), _renderAddonPanel pinta un
+ *      bloque bajo "Complementos" titulado "🎯 Grupo exclusivo" con una
+ *      sección por grupo. Cada sección muestra el label del grupo y las
+ *      opciones como chips radio-like: primero "No añadir", luego una
+ *      opción por cada ref válido con label/price/duration leídos del
+ *      catálogo vivo (this._serviciosMap). Estado guardado en
+ *      b.exclusivosSel[groupKey] = uid del elegido; ausencia = No añadir.
+ *      _confirmBooking recorre items tipo:'exclusivo' del mapeoFases y,
+ *      por cada elección guardada, empuja al array complementosSetupUid
+ *      un objeto { uid, varianteId, varianteLabel, price, duration } —
+ *      mismo shape que las variantes de complemento (patrón v0.3.9). El
+ *      motor construirFasesPack v1.0.34 detecta el uid dentro de f.refs
+ *      y materializa el servicio en la posición del grupo. Cero cambios
+ *      en pagecode ni backend.
+ *      Cliente Provisional NO SE PIDEN LOS COMPLEMENTOS CASO A (Lavado,
+ *      Secado dentro de un Color): el motor v1.0.36 ya los filtra del
+ *      array `complementos` del shape del servicio, así que el widget ni
+ *      los ve. Cero UI para ellos, materializados en backend.
+ *
+ *   2) DETALLE ESPECÍFICO DE FASE al pulsar un bloque del calendario.
+ *      Antes _renderDetailBody mostraba SIEMPRE la RESERVA completa
+ *      (cliente/servicio principal/hora total), sin importar en qué fase
+ *      hizo click el operador. Ahora: si el bloque clicado corresponde a
+ *      una fase concreta (no legacy), el detail muestra un chip con la
+ *      fase clicada (label + hora + duración) junto al resto de datos de
+ *      la reserva. _openApptDetail acepta segundo parámetro `fase`;
+ *      _renderDetailBody y _adaptDetailData lo usan para pintar el chip.
+ *      Además: leyendas de fase visibles a partir de 20px de alto (antes
+ *      32px), aumentando la información visible en bloques cortos.
+ *
+ *   3) CLIENTE PROVISIONAL en el step 1. Botón "+ Cliente provisional"
+ *      bajo "+ Cliente nuevo". Al pulsarlo, campo mínimo con solo nombre
+ *      (no se persiste en CRM). Estado guardado en b.provClient =
+ *      { nombre, esProvisional:true }. Chip visible con badge "provisional"
+ *      naranja en el step 1. Al confirmar, el payload lleva
+ *      esProvisional:true y memberContactId vacío; el backend
+ *      crearPackReserva (v1.0.6+) salta ensureContactInCRM. El pagecode
+ *      v0.3.3 ya acepta esProvisional en el contrato de mensajes; cero
+ *      cambios en pagecode. Patrón literal del Desktop v1.1.12.
+ *
+ *   4) BLOQUEOS: chip "DÍA COMPLETO" + chip "Personalizado". El sheet
+ *      de nuevo bloqueo tenía chips fijos [15,30,45,60,90,120]. Ahora se
+ *      añade "Día completo" (bloquea de 09:00 a 21:00 = 720 min) que
+ *      además fija time=09:00 automáticamente, y "Personalizado" que
+ *      abre un input numérico donde el operador escribe la duración en
+ *      minutos (mín. 5, máx. 720). Sin dependencias de backend nuevo:
+ *      crearBloqueo (recepcionProLogic v1.0.20 desplegado) ya acepta
+ *      duracionMin arbitrario mínimo 5. Cero cambios en pagecode.
+ *
+ *   Cabecera visible en el shell:
+ *     "KAMISUITE / Recepción Mobile" → "KAMISUITE / Recepción Mobile LITE"
+ *     Cambio único en <span class="sub"> del <header class="header">.
+ *
+ *   Cero cambios en: calendario base, cache de contactos, refresh
+ *   automático, cancelar cita, bloqueos crear/editar/eliminar (backend),
+ *   extensiones visuales, staff/settings, mensajes del pagecode
+ *   (contrato intacto), CSS existente (solo se AÑADEN reglas nuevas para
+ *   chip radio-like del grupo exclusivo y chip provisional).
  *
  * v0.3.9 — Complementos con VARIANTES (paridad con Recepción PRO Desktop v1.1.44).
  *   El widget Lite Mobile estaba detrás del Desktop: todos los complementos
@@ -178,11 +547,28 @@
  * ═══════════════════════════════════════════════════════════════════════════ */
 (function () {
   'use strict';
+  // v0.5.3 — GUARDA DE ENTORNO. Hasta v0.5.2 la primera sentencia
+  // ejecutable era `customElements.get(...)` sin comprobar que
+  // `customElements` existiera. Cuando Wix evalúa este archivo en un
+  // contexto sin DOM, eso lanza:
+  //     ReferenceError: customElements is not defined
+  // y aborta el script COMPLETO — incluido el customElements.define del
+  // final. Verificado en producción KALÓNICE (log 6-ago-2026 02:05:33,
+  // inmediatamente después de "Running the code for the Recepción LITE
+  // MOBILE V2 page").
+  //
+  // Deuda compartida: kamisuiteAgenda.js, kamisuiteMobile.js y
+  // akiraConsole.js tienen exactamente el mismo patrón sin guarda.
+  //
+  // Salida limpia en ese caso; en navegador el comportamiento es idéntico.
+  if (typeof customElements === 'undefined') {
+    return;
+  }
   if (customElements.get('kamisuite-booking-lite')) {
     console.log('[KamisuiteBookingLite] Ya registrado.');
     return;
   }
-  const VERSION = '0.3.9';
+  const VERSION = '0.6.3';
   const TAG = `[BookingLite v${VERSION}]`;
 
   // ── Constantes de calendario ──
@@ -191,6 +577,15 @@
   const SLOT_MIN = 30;
   const PRELOAD_DAYS = 30;
   const MIN_COL_W = 112;    // v0.3.1 — ancho mínimo de columna; si caben más anchas, se estiran
+  // v0.5.4 — Vigencia del cliente conservado entre aperturas del sheet.
+  // Pasado este tiempo no se restaura, para no arrastrar un cliente
+  // antiguo a una reserva que no le corresponde.
+  // v0.5.5 — Subido de 5 a 15 min: encadenar las reservas de una familia
+  // (madre + dos hijos, eligiendo servicio, empleado y hora en cada una)
+  // se pasa de 5 minutos con facilidad. El `ts` se refresca en cada
+  // guardado, así que la ventana cuenta desde la última reserva, no desde
+  // la primera.
+  const CLIENTE_TTL_MS = 15 * 60 * 1000;
 
   // ── v0.3.0 — Paleta de colores por empleado (literal de desktop V2,
   //    recepcionProCMS_widget línea 544). Coherencia visual entre apps. ──
@@ -926,6 +1321,25 @@ input, textarea { font-family: inherit; }
       this._detail = { open: false, data: null };
       // v0.3.7 — Sheet de creación de bloqueo
       this._bloqueo = this._emptyBloqueo();
+      // ── v0.5.1 — Handshake con el page code ──
+      // _initRecibido: true en cuanto llega 'init-data'. Corta el retry.
+      // _readyTimer / _readyTries: retry loop de 'ready' (patrón literal
+      //   del _readyTimer de recepcionProCMS_widget v1.1.55).
+      // _refreshTimer: handle del setInterval de refresh de 10 s. Hasta
+      //   v0.5.0 no se guardaba y no se limpiaba nunca → intervals
+      //   huérfanos acumulados en cada reconexión del custom element.
+      this._initRecibido = false;
+      this._readyTries = 0;
+      this._readyTimer = null;
+      this._refreshTimer = null;
+      // ── v0.5.4 — Cliente conservado entre aperturas del sheet ──
+      // Al cerrar el sheet sin completar la reserva (✕, scrim, o cierre
+      // accidental), se guarda aquí el cliente ya elegido para restaurarlo
+      // en la siguiente apertura. Shape:
+      //   { client, newClient, provClient, query, ts }
+      // Caduca a los CLIENTE_TTL_MS para que no se arrastre un cliente de
+      // hace media hora a una reserva que no le corresponde.
+      this._clientePendiente = null;
     }
 
     // v0.3.7 — Estado inicial del sheet de bloqueo.
@@ -946,13 +1360,55 @@ input, textarea { font-family: inherit; }
         step: 1,
         client: null,            // {contactId, nombreCompleto, telefono, email}
         newClient: null,         // {nombre, apellido, telefono, email} (si crea nuevo)
+        // v0.4.0 — cliente provisional (Punto 3): objeto local sin contactId,
+        // no se persiste en CRM. Backend crearPackReserva v1.0.6+ salta
+        // ensureContactInCRM al recibir esProvisional:true. Patrón literal
+        // Desktop v1.1.12: { nombre, esProvisional:true, contactId:'',
+        //                    telefono:'', email:'' }
+        provClient: null,
         adding: false,
-        service: null,           // svc del catálogo (V2: con setupUid)
+        // v0.4.0 — flag para pintar el mini-form de cliente provisional
+        // en el step 1 (equivalente a `adding` pero para provisional).
+        addingProv: false,
+        service: null,           // svc del catálogo (V2: con setupUid) — LÍNEA EN EDICIÓN
+        // v0.6.0 — ARMADO MÚLTIPLE (paridad Desktop v1.1.81).
+        // `lineas` son los servicios YA añadidos a la cita. La primera
+        // crea la reserva con crearPackReserva; las siguientes se añaden
+        // a ESA MISMA reserva con agregarServicioReserva → un solo pack,
+        // un solo total, un solo cobro, pero cada servicio se pinta como
+        // su propio bloque en el calendario (una .appt por fase ocupante).
+        // Shape de cada línea:
+        //   { svc, variantIdx, complementosSel, exclusivosSel, label, precio }
+        lineas: [],
+        // Cola de líneas pendientes de añadir tras crear la reserva.
+        // Se llena en _confirmBooking y se consume en _onReservaCreada /
+        // case 'servicio-agregado'.
+        cadenaPendiente: [],
+        cadenaReservaId: null,
         // v0.3.1 — acordeón step 2: null = todos plegados; string = grupo abierto
         expandedGroup: null,
         // v0.3.0 — modelo V2 plano: variantes (índice) + complementos (Map setupUid→bool)
-        variantIdx: 0,           // índice en svc.variantes[] (default 0)
+        // v0.5.0 — modelo con VARIANTE BASE del catálogo.
+        //   variantIdx: -1  → BASE del servicio (svc.price + svc.duration
+        //                     del catálogo). Es lo que actúa como "M".
+        //                     Al confirmar NO se envía varianteSel — el
+        //                     backend crearPackReserva usa base
+        //                     (comportamiento pre-v1.0.25).
+        //   variantIdx: 0..N → variante del array svc.variantes[i].
+        //                     Al confirmar SE envía varianteSel con
+        //                     precio/duración/label de la variante
+        //                     elegida (patrón v1.0.25 del motor +
+        //                     v1.1.43 del widget Desktop).
+        variantIdx: -1,          // índice en svc.variantes[] (-1 = base)
         complementosSel: {},     // { [setupUid]: true|false }
+        // v0.4.0 — grupo exclusivo (Punto 1). Estado por groupKey (string
+        // 'exc:<idx>' donde idx es la posición del item tipo:'exclusivo' en
+        // svc.mapeoFases). Valor = setupUid del servicio elegido, o
+        // ausencia del key = "No añadir". Al confirmar se convierte a
+        // objetos { uid, varianteId, varianteLabel, price, duration }
+        // que se empujan al array complementosSetupUid — patrón Desktop
+        // v1.1.59; el motor construirFasesPack v1.0.34 los materializa.
+        exclusivosSel: {},
         emp: null,
         time: null,              // HH:MM
         query: '',
@@ -972,15 +1428,72 @@ input, textarea { font-family: inherit; }
       }
       this._renderShell();
       this._bindBaseEvents();
+
+      // v0.5.1 — RESCATE DE REMONTAJE (patrón Desktop v1.1.66).
+      // Wix puede desconectar y reconectar el custom element durante la
+      // hidratación o un relayout. En ese segundo connectedCallback,
+      // _renderShell acaba de repintar el placeholder estático
+      // "Cargando agenda…", pero los datos YA están en memoria y el retry
+      // de 'ready' no re-dispara porque _initRecibido ya es true → la
+      // pantalla se quedaría colgada sin rescate posible. Repintamos con
+      // lo que haya. En el PRIMER montaje _staff está vacío y esto es
+      // no-op: comportamiento idéntico a v0.5.0.
+      if (this._staff.length) {
+        this._renderCalendarHeader();
+        // v0.5.2 — y refrescar las citas del día visible: si el remontaje
+        // ocurrió antes de que llegaran, el calendario quedaría con las
+        // columnas pintadas y sin citas hasta el siguiente tick de 10 s.
+        this._sendToPage('get-reservas-dia', { fecha: this._fecha });
+      }
+
       this._sendToPage('ready', {});
+
+      // v0.5.1 — RETRY LOOP DE 'ready'. Copia literal del patrón
+      // _readyTimer de recepcionProCMS_widget v1.1.55 (700 ms, 12 intentos).
+      //
+      // Motivo: el page code engancha su listener dentro de $w.onReady. Por
+      // la carrera de tiempos de Wix, el dispatchEvent de arriba puede caer
+      // antes de que ese listener exista y se pierde SIN dejar rastro en
+      // logs (verificado en producción KALÓNICE: en los logs nunca aparece
+      // un segundo "📱 CE listo" provocado por el custom element; el único
+      // que aparece es el kickoff proactivo del page code). Sin este retry
+      // la carga de la agenda depende de que el kickoff gane la carrera, y
+      // cuando la pierde el cuelgue es permanente.
+      //
+      // Page code v0.3.6 hace handleReady idempotente: si ya tiene staff y
+      // catálogo en memoria reenvía 'init-data' sin volver a llamar al
+      // backend. Por eso reintentar es barato.
+      this._readyTries = 0;
+      this._readyTimer = setInterval(() => {
+        if (this._initRecibido || this._readyTries >= 12) {
+          clearInterval(this._readyTimer);
+          this._readyTimer = null;
+          return;
+        }
+        this._readyTries++;
+        console.log(`${TAG} → reintento ready #${this._readyTries}`);
+        this._sendToPage('ready', {});
+      }, 700);
+
       // Refresh automático cada 10s (igual que kamisuiteAgenda.js líneas 612-617)
-      setInterval(() => {
+      // v0.5.1 — handle guardado en _refreshTimer para poder limpiarlo en
+      // disconnectedCallback. Antes se creaba anónimo en cada montaje.
+      this._refreshTimer = setInterval(() => {
         if (this._lastDateChange && Date.now() - this._lastDateChange < 5000) return;
         // No refrescar si hay sheets abiertos
         if (this._booking.open || this._monthOpen || this._detail.open || this._bloqueo.open) return;
         this._sendToPage('get-reservas-dia', { fecha: this._fecha });
       }, 10000);
       console.log(`${TAG} 📱 Montado. Fecha inicial: ${this._fecha}`);
+    }
+
+    // v0.5.1 — NUEVO. Limpia ambos timers al desconectar el elemento.
+    // Sin esto, cada reconexión del custom element por parte de Wix dejaba
+    // vivo el setInterval de refresh anterior: N intervals huérfanos
+    // pidiendo reservas cada 10 s contra el backend.
+    disconnectedCallback() {
+      if (this._readyTimer) { clearInterval(this._readyTimer); this._readyTimer = null; }
+      if (this._refreshTimer) { clearInterval(this._refreshTimer); this._refreshTimer = null; }
     }
 
     attributeChangedCallback(name, oldVal, newVal) {
@@ -1002,7 +1515,17 @@ input, textarea { font-family: inherit; }
     // ═══════════════════════════════════════════════════════════════════════
     _handleResponse(p) {
       switch (p.type) {
-        case 'init-data':
+        case 'init-data': {
+          // v0.5.1 — Handshake completado: corta el retry de 'ready'.
+          // v0.5.2 — ELIMINADA la guarda _initDuplicado de v0.5.1. Era una
+          // optimización para no repetir el preload de 30 días si un retry
+          // de 'ready' se cruzaba con el 'init-data' original, y provocó una
+          // REGRESIÓN: en producción KALÓNICE (logs 6-ago-2026 00:01) la cola
+          // de peticiones no se envió NUNCA tras el init — sin
+          // 'get-reservas-dia' inicial la agenda quedaba vacía hasta que el
+          // operador navegaba a otro día y volvía. La cola se envía siempre.
+          this._initRecibido = true;
+          if (this._readyTimer) { clearInterval(this._readyTimer); this._readyTimer = null; }
           // v0.3.0 — Staff V2 (getStaffColumnas): {wixResourceId, wixScheduleId,
           // displayName, isExternal, profileImage}. Normalizo a forma legacy
           // {id, name, color, scheduleId, isExternal, profileImage} para no
@@ -1024,12 +1547,18 @@ input, textarea { font-family: inherit; }
           this._initStaffConfig();
           this._renderCalendarHeader();
           console.log(`${TAG} 🎯 Init: ${this._staff.length} staff, ${this._catalogo.length} servicios`);
+          // v0.5.2 — Cola SIEMPRE, sin condiciones (comportamiento v0.5.0).
+          // Nunca volver a condicionar estas tres líneas: son las que
+          // cargan la agenda del día. Si un retry cruzado provoca un
+          // segundo envío, el coste es un preload repetido; el coste de
+          // no enviarlas es una agenda en blanco.
           this._sendToPage('get-reservas-dia', { fecha: this._fecha });
           this._sendToPage('preload-reservas', { fechaBase: this._fecha, dias: PRELOAD_DAYS });
           // v0.3.0 — Pide settings del usuario (CalendarViewSettings).
           // Llega como 'settings-data' y aplica staffConfig si existe.
           this._sendToPage('get-settings', {});
           break;
+        }
 
         case 'reservas-dia':
           if (p.fecha) {
@@ -1089,6 +1618,11 @@ input, textarea { font-family: inherit; }
 
         case 'reserva-creada':
           this._onReservaCreada(p);
+          break;
+
+        // v0.6.0 — ARMADO MÚLTIPLE: respuesta a 'agregar-servicio'.
+        case 'servicio-agregado':
+          this._onServicioAgregado(p);
           break;
 
         case 'reserva-cancelada':
@@ -1170,7 +1704,7 @@ input, textarea { font-family: inherit; }
           <header class="header">
             <div class="brand">
               <span class="logo">KAMISUITE</span>
-              <span class="sub">Recepción Mobile</span>
+              <span class="sub">Recepción Mobile LITE</span>
             </div>
             <div style="display:flex;align-items:center">
               <button class="btn-refresh" id="btnRefresh" aria-label="Actualizar">${ICONS.refresh}</button>
@@ -1572,19 +2106,172 @@ input, textarea { font-family: inherit; }
       apptEl.style.background = color;
 
       const startHHmm = fmtTime(startMin);
+      // v0.4.0 — Umbral de leyenda bajado de 32px a 20px para que
+      // fases cortas (Lavado 15min, Secado 15min…) muestren su label
+      // sin necesidad de abrir el detail. Antes solo se veían subtitles
+      // en bloques ≥30min (32px / (56/30)) — hoy visibles ya desde
+      // ≈15min (20px). El bloque mínimo pintable sigue siendo 14px (ver
+      // línea `if (height < 14 || top < 0) return false;`).
       apptEl.innerHTML = `
         <span class="ap-time">${esc(startHHmm)}</span>
         <span class="ap-client">${esc(title)}</span>
-        ${(height > 32 && subtitle) ? `<span class="ap-service">${esc(subtitle)}</span>` : ''}
+        ${(height > 20 && subtitle) ? `<span class="ap-service">${esc(subtitle)}</span>` : ''}
       `;
 
       apptEl.addEventListener('click', (e) => {
         e.stopPropagation();
-        this._openApptDetail(reservaCompleta);
+        // v0.4.0 — Pasar la fase clicada al detail para pintar chip
+        // específico de esa fase (label, hora, duración). Si es legacy
+        // (fase=null), _renderDetailBody no pinta el chip y se comporta
+        // como antes.
+        this._openApptDetail(reservaCompleta, fase);
       });
 
       col.appendChild(apptEl);
       return true;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // v0.6.0 — ARMADO MÚLTIPLE: helpers de línea
+    //   Paridad con Recepción PRO Desktop v1.1.81. Cada "línea" es un
+    //   servicio con su variante y sus complementos ya resueltos. La
+    //   primera crea la reserva; el resto se añaden a la misma con
+    //   agregarServicioReserva (un pack, un cobro, N bloques pintados).
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Construye el array complementosSetupUid de una línea (mezcla de
+    // strings y objetos con variante). Extraído de _confirmBooking v0.5.5
+    // sin cambios de lógica, para poder reutilizarlo por línea.
+    _complementosDeLinea(svc, complementosSel, exclusivosSel) {
+      const out = [];
+      const svcComps = (svc && Array.isArray(svc.complementos)) ? svc.complementos : [];
+      for (const uid of Object.keys(complementosSel || {})) {
+        const val = complementosSel[uid];
+        if (val === true) {
+          out.push(uid);
+        } else if (val && typeof val === 'object' && Number.isInteger(val.varianteIdx)) {
+          const c = svcComps.find(x => x.setupUid === uid);
+          const v = (c && Array.isArray(c.variantes)) ? c.variantes[val.varianteIdx] : null;
+          if (v) {
+            const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || '');
+            const vId = (typeof v === 'object' && v.tamano_estilo) ? v.tamano_estilo : String(val.varianteIdx);
+            const vPrice = (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) || 0 : 0;
+            const vDur = (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) || 0 : 0;
+            out.push({ uid, varianteId: vId, varianteLabel: vLabel, price: vPrice, duration: vDur });
+          }
+        }
+      }
+      // Grupo exclusivo — mismo shape (patrón Desktop v1.1.59).
+      const mapeo = Array.isArray(svc && svc.mapeoFases)
+        ? svc.mapeoFases
+        : (typeof (svc && svc.mapeoFases) === 'string' ? this._tryParseArr(svc.mapeoFases) : []);
+      if (Array.isArray(mapeo) && exclusivosSel) {
+        mapeo.forEach((f, idx) => {
+          if (!f || f.tipo !== 'exclusivo') return;
+          const uidElegido = exclusivosSel['exc:' + idx];
+          if (!uidElegido) return;
+          const svcRef = this._serviciosMap[uidElegido];
+          if (!svcRef) return;
+          out.push({
+            uid: svcRef.setupUid,
+            varianteId: svcRef.setupUid,
+            varianteLabel: svcRef.label || '',
+            price: Number(svcRef.price) || 0,
+            duration: Number(svcRef.duration) || 0
+          });
+        });
+      }
+      return out;
+    }
+
+    // varianteSel de una línea: null si es la BASE (variantIdx === -1).
+    _varianteSelDeLinea(svc, variantIdx) {
+      if (!svc || !svc.hasVariants || !Array.isArray(svc.variantes)) return null;
+      if (!Number.isInteger(variantIdx) || variantIdx < 0 || variantIdx >= svc.variantes.length) return null;
+      const v = svc.variantes[variantIdx];
+      if (!v || typeof v !== 'object') return null;
+      return {
+        idx: variantIdx,
+        label: v.label || v.nombre || '',
+        price: Number(v.precio != null ? v.precio : v.price) || 0,
+        duration: Number(v.duracion != null ? v.duracion : v.duration) || 0
+      };
+    }
+
+    // Precio estimado de una línea, para el resumen del sheet.
+    // Es informativo: el precio real lo calcula el backend.
+    _precioDeLinea(linea) {
+      if (!linea || !linea.svc) return 0;
+      const vs = this._varianteSelDeLinea(linea.svc, linea.variantIdx);
+      let total = vs ? vs.price : (Number(linea.svc.price) || 0);
+      const comps = this._complementosDeLinea(linea.svc, linea.complementosSel, linea.exclusivosSel);
+      const svcComps = Array.isArray(linea.svc.complementos) ? linea.svc.complementos : [];
+      for (const c of comps) {
+        if (typeof c === 'string') {
+          const meta = svcComps.find(x => x.setupUid === c);
+          total += Number(meta?.price) || 0;
+        } else {
+          total += Number(c.price) || 0;
+        }
+      }
+      return Math.round(total * 100) / 100;
+    }
+
+    // Etiqueta legible de una línea: "Corte Mujer · L"
+    _labelDeLinea(linea) {
+      if (!linea || !linea.svc) return '';
+      const vs = this._varianteSelDeLinea(linea.svc, linea.variantIdx);
+      return vs && vs.label
+        ? `${linea.svc.label} · ${vs.label}`
+        : (linea.svc.label || '');
+    }
+
+    // Convierte la línea EN EDICIÓN (b.service + selecciones) en una línea
+    // materializada y la empuja a b.lineas. Devuelve false si falta alguna
+    // variante obligatoria.
+    _añadirLineaActual() {
+      const b = this._booking;
+      if (!b.service) return false;
+      const faltan = this._faltanVariantesRequiredLabels();
+      if (faltan.length) {
+        this._toast(`Falta elegir variante de: ${faltan.join(', ')}`);
+        return false;
+      }
+      const linea = {
+        svc: b.service,
+        variantIdx: b.variantIdx,
+        complementosSel: { ...(b.complementosSel || {}) },
+        exclusivosSel: { ...(b.exclusivosSel || {}) }
+      };
+      b.lineas.push(linea);
+      // Limpia la línea en edición para poder elegir otro servicio.
+      b.service = null;
+      b.variantIdx = -1;
+      b.complementosSel = {};
+      b.exclusivosSel = {};
+      return true;
+    }
+
+    _quitarLinea(idx) {
+      const b = this._booking;
+      if (idx < 0 || idx >= b.lineas.length) return;
+      b.lineas.splice(idx, 1);
+      this._renderBookingBody();
+      this._renderBookingFoot();
+    }
+
+    _totalLineas() {
+      const b = this._booking;
+      const enEdicion = b.service
+        ? [{ svc: b.service, variantIdx: b.variantIdx, complementosSel: b.complementosSel, exclusivosSel: b.exclusivosSel }]
+        : [];
+      return b.lineas.concat(enEdicion)
+        .reduce((acc, l) => acc + this._precioDeLinea(l), 0);
+    }
+
+    _numLineas() {
+      const b = this._booking;
+      return b.lineas.length + (b.service ? 1 : 0);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1637,14 +2324,66 @@ input, textarea { font-family: inherit; }
         if (prefill.emp) this._booking.emp = prefill.emp;
         if (prefill.time) this._booking.time = prefill.time;
       }
-      this._searchResults = [];
+
+      // v0.5.4 — Restaura el cliente que ya estaba elegido si el sheet se
+      // cerró sin completar la reserva. Cerrar con la ✕ (a menudo por
+      // error) obligaba a volver a buscar el cliente desde cero, porque
+      // _emptyBooking() arrasa con todo el estado.
+      //
+      // Solo se restaura el CLIENTE. Servicio, complementos, empleado y
+      // hora se resetean siempre: la nueva apertura suele venir de tocar
+      // otro slot del calendario, con otra hora y otro empleado.
+      //
+      // Caduca a los 5 minutos para no arrastrar un cliente antiguo a una
+      // reserva que no le corresponde. El chip del step 1 lo deja siempre
+      // visible con botón "Quitar" — sin esa señal visual, restaurar sería
+      // peligroso (reservar a la persona equivocada sin darse cuenta).
+      const cp = this._clientePendiente;
+      const vigente = !!cp && (Date.now() - (cp.ts || 0) < CLIENTE_TTL_MS);
+      if (vigente) {
+        this._booking.client = cp.client || null;
+        this._booking.newClient = cp.newClient || null;
+        this._booking.provClient = cp.provClient || null;
+        this._booking.query = cp.query || '';
+        // _searchResults NO se vacía: la lista sigue pintándose con el
+        // cliente resaltado, que es la confirmación visual de la elección.
+      } else {
+        this._clientePendiente = null;
+        this._searchResults = [];
+      }
+
       const R = this.shadowRoot;
       R.getElementById('bookScrim').classList.add('open');
       R.getElementById('bookSheet').classList.add('open');
       this._renderBookingSheet();
     }
 
+    // v0.5.4 — Guarda el cliente elegido al cerrar sin completar.
+    // Si la reserva se creó (b.done), NO se guarda: la siguiente reserva
+    // arranca limpia.
+    _guardarClientePendiente(forzar = false) {
+      const b = this._booking;
+      if (!b) { this._clientePendiente = null; return; }
+      // v0.5.5 — `forzar` lo usa _onReservaCreada: tras crear la reserva
+      // b.done pasa a true, pero el cliente debe conservarse igualmente
+      // para encadenar más reservas de la misma familia.
+      if (b.done && !forzar) { this._clientePendiente = null; return; }
+      const hayCliente = !!(b.client || b.provClient ||
+        (b.newClient && (b.newClient.nombre || b.newClient.apellido)));
+      if (!hayCliente) { this._clientePendiente = null; return; }
+      this._clientePendiente = {
+        client: b.client || null,
+        newClient: b.newClient || null,
+        provClient: b.provClient || null,
+        query: b.query || '',
+        ts: Date.now()
+      };
+    }
+
     _closeBookingSheet() {
+      // v0.5.4 — Antes de descartar el estado, conserva el cliente elegido
+      // para la próxima apertura (ver _openBookingSheet).
+      this._guardarClientePendiente();
       this._booking.open = false;
       const R = this.shadowRoot;
       R.getElementById('bookScrim').classList.remove('open');
@@ -1701,9 +2440,22 @@ input, textarea { font-family: inherit; }
         // textual).
         const paso2ConServicio = (b.step === 2 && !!b.service);
         const disabledAttr = (!canNext && !paso2ConServicio) ? 'disabled' : '';
-        foot.innerHTML = `<button class="btn-primary" id="bkNext" ${disabledAttr}>Continuar</button>`;
+        // v0.6.0 — En el paso 2 el botón muestra el recuento y el total
+        // cuando hay más de un servicio armado.
+        let labelNext = 'Continuar';
+        if (b.step === 2) {
+          const n = this._numLineas();
+          if (n > 1) labelNext = `Continuar · ${n} servicios · ${this._totalLineas()}€`;
+        }
+        foot.innerHTML = `<button class="btn-primary" id="bkNext" ${disabledAttr}>${labelNext}</button>`;
         const btn = R.getElementById('bkNext');
         if (btn) btn.addEventListener('click', () => {
+          // v0.6.0 — Al salir del paso 2, la línea en edición se cierra
+          // automáticamente. Así el flujo de UN solo servicio queda
+          // idéntico al de siempre: elegir servicio → Continuar.
+          if (b.step === 2 && b.service) {
+            if (!this._añadirLineaActual()) return;
+          }
           if (this._canAdvanceStep()) {
             this._setStep(Math.min(4, b.step + 1));
           } else if (b.step === 2) {
@@ -1714,8 +2466,18 @@ input, textarea { font-family: inherit; }
           }
         });
       } else {
+        // v0.6.0 — Con varias líneas el botón lo indica, y durante la
+        // cadena informa de por dónde va.
+        const nL = b.lineas.length;
+        let labelCrear = `${ICONS.check} Crear reserva`;
+        if (nL > 1) labelCrear = `${ICONS.check} Crear cita · ${nL} servicios`;
+        let labelCreando = 'Creando…';
+        if (b.creating && b.cadenaReservaId && b.cadenaPendiente.length) {
+          const hechos = nL - b.cadenaPendiente.length;
+          labelCreando = `Añadiendo servicio ${hechos + 1} de ${nL}…`;
+        }
         foot.innerHTML = `<button class="btn-primary" id="bkCreate" ${b.creating?'disabled':''}>
-          ${b.creating ? 'Creando…' : `${ICONS.check} Crear reserva`}
+          ${b.creating ? labelCreando : labelCrear}
         </button>`;
         const btn = R.getElementById('bkCreate');
         if (btn) btn.addEventListener('click', () => this._confirmBooking());
@@ -1736,8 +2498,10 @@ input, textarea { font-family: inherit; }
       // variante seleccionada (no hay opción "no añadir" para required;
       // patrón Desktop v1.1.44). Backend valida también como defensa
       // (recepcionProLogic v1.0.29 devuelve faltanVariantes).
+      // v0.6.0 — Con armado múltiple, basta con que haya AL MENOS una
+      // línea añadida o una línea en edición válida.
       if (b.step === 2) {
-        if (!b.service) return false;
+        if (!b.service) return b.lineas.length > 0;
         const comps = Array.isArray(b.service.complementos) ? b.service.complementos : [];
         for (const c of comps) {
           if (!c.required) continue;
@@ -1776,6 +2540,13 @@ input, textarea { font-family: inherit; }
       if (b.newClient && (b.newClient.nombre || b.newClient.apellido)) {
         return `${b.newClient.nombre || ''} ${b.newClient.apellido || ''}`.trim();
       }
+      // v0.4.0 — Cliente provisional (Punto 3). Solo si NO estamos aún en
+      // el mini-form (b.addingProv === true) — allí b.provClient.nombre
+      // puede ser '', y el step 1 no debe considerarse completo hasta que
+      // el operador escriba un nombre y cierre el form (Enter o siguiente).
+      if (b.provClient && !b.addingProv && (b.provClient.nombre || '').trim()) {
+        return b.provClient.nombre.trim();
+      }
       return '';
     }
 
@@ -1788,13 +2559,18 @@ input, textarea { font-family: inherit; }
       const b = this._booking;
       if (b.done) {
         const cl = this._currentClientLabel();
-        const svcLabel = b.service?.label || '';
         const empName = (this._getVisibleStaff().find(s => s.id === b.emp) || {}).name || b.emp;
+        // v0.6.0 — Resumen con todos los servicios de la cita.
+        const svcLabels = b.lineas.map(l => this._labelDeLinea(l)).filter(Boolean);
+        const svcTxt = svcLabels.length ? svcLabels.join(' + ') : '';
+        const nTxt = b.lineas.length > 1
+          ? `<br><span style="color:var(--accent)">${b.lineas.length} servicios · un solo cobro</span>`
+          : '';
         body.innerHTML = `
           <div class="success">
             <div class="success-icon">${ICONS.check}</div>
             <h3>Reserva creada</h3>
-            <p>${esc(cl)} · ${esc(svcLabel)}<br>${esc(empName)} · ${esc(b.time || '')} · ${esc(this._fecha)}</p>
+            <p>${esc(cl)} · ${esc(svcTxt)}<br>${esc(empName)} · ${esc(b.time || '')} · ${esc(this._fecha)}${nTxt}</p>
           </div>
         `;
         return;
@@ -1806,14 +2582,60 @@ input, textarea { font-family: inherit; }
     }
 
     // ── STEP 1: cliente ──
+    //   v0.4.0 — Añadido Cliente provisional (Punto 3). Botón adicional
+    //   "+ Cliente provisional" bajo "+ Cliente nuevo". Al pulsarlo se
+    //   abre el mini-form con solo un input de nombre. Al guardar,
+    //   b.provClient = { nombre, esProvisional:true } y aparece un chip
+    //   naranja en el sidebar indicando el estado. Backend recibe
+    //   esProvisional:true y salta ensureContactInCRM. Patrón literal
+    //   Desktop v1.1.12.
     _renderStepClient(body) {
       const b = this._booking;
       const cacheReady = this._cacheContactosReady;
       const adding = b.adding;
+      const addingProv = b.addingProv;
       let html = `
         <span class="field-label">Cliente</span>
       `;
-      if (!adding) {
+      // Chip de cliente provisional ya elegido (visible si b.provClient
+      // existe y NO estamos en el mini-form de creación).
+      if (b.provClient && b.provClient.nombre && !addingProv && !adding) {
+        html += `
+          <div class="prov-chip" style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid #f0c879;background:#fff7e0;border-radius:12px;margin-bottom:10px;">
+            <div class="avatar" style="background:#e89c1c;color:#fff;">${esc(initials(b.provClient.nombre))}</div>
+            <div class="client-info" style="flex:1;">
+              <div class="cn" style="display:flex;align-items:center;gap:6px;">${esc(b.provClient.nombre)}<span style="padding:2px 7px;border-radius:999px;background:#e89c1c;color:#fff;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;">provisional</span></div>
+              <div class="cm" style="color:#a55b00;font-style:italic;">sin datos · no recibe comunicaciones</div>
+            </div>
+            <button class="btn-ghost" id="bkProvClear" style="padding:6px 10px;">Quitar</button>
+          </div>
+        `;
+      }
+      if (!adding && !addingProv) {
+        // v0.5.4 — CHIP DEL CLIENTE REAL SELECCIONADO.
+        // Hasta v0.5.3 el cliente elegido solo se veía como fila resaltada
+        // DENTRO de la lista de resultados. Si la lista dejaba de pintarse
+        // (búsqueda vacía, vuelta desde otro step, reapertura del sheet),
+        // parecía que no había cliente aunque sí lo hubiera.
+        // El cliente provisional sí tenía chip desde v0.4.0; el real no.
+        // Además es la confirmación visual que hace segura la restauración
+        // del cliente al reabrir el sheet: sin ella, el operador podría
+        // reservarle la cita a la persona equivocada sin enterarse.
+        if (b.client) {
+          const cLabel = b.client.nombreCompleto ||
+            `${b.client.nombre || ''} ${b.client.apellido || ''}`.trim();
+          const cMeta = b.client.telefono || b.client.email || '';
+          html += `
+            <div style="display:flex;align-items:center;gap:10px;padding:12px 14px;border:1px solid var(--orange);background:rgba(232,119,34,0.10);border-radius:12px;margin-bottom:10px;">
+              <div class="avatar" style="background:var(--orange);color:#fff;">${esc(initials(cLabel))}</div>
+              <div class="client-info" style="flex:1;min-width:0;">
+                <div class="cn">${esc(cLabel || '—')}</div>
+                ${cMeta ? `<div class="cm">${esc(cMeta)}</div>` : ''}
+              </div>
+              <button class="btn-ghost" id="bkClientClear" style="padding:6px 10px;">Quitar</button>
+            </div>
+          `;
+        }
         html += `
           <div class="search">
             ${ICONS.search}
@@ -1843,7 +2665,11 @@ input, textarea { font-family: inherit; }
           html += `<div class="empty-hint">Escribe al menos 2 caracteres para buscar.</div>`;
         }
         html += `<button class="new-client-btn" id="bkNewClient"><span class="plus">+</span> Cliente nuevo</button>`;
-      } else {
+        // v0.4.0 — Cliente provisional: segundo botón bajo el de cliente
+        // nuevo, con línea discontinua y color más apagado para dejar
+        // claro que es un flujo alternativo (cliente de paso).
+        html += `<button class="new-client-btn" id="bkProvClient" style="margin-top:8px;border-style:dashed;color:#7a7f8b;background:transparent;"><span class="plus">+</span> Cliente provisional</button>`;
+      } else if (adding) {
         const nc = b.newClient || {};
         html += `
           <div class="search">
@@ -1864,16 +2690,32 @@ input, textarea { font-family: inherit; }
           </div>
           <button class="btn-ghost" id="bkCancelNew" style="margin-top:10px;">Cancelar cliente nuevo</button>
         `;
+      } else {
+        // v0.4.0 — Mini-form de cliente provisional: solo nombre.
+        const pv = b.provClient || {};
+        html += `
+          <div style="padding:10px 12px;background:#fff7e0;border:1px solid #f0c879;border-radius:10px;font-size:12.5px;color:#7a4500;line-height:1.5;margin-bottom:10px;">
+            Cliente de paso. Solo se pide el nombre. <b>No se guarda en CRM</b> ni recibe comunicaciones. Si vuelve otro día, hay que pedirle los datos completos como cliente nuevo.
+          </div>
+          <div class="search">
+            ${ICONS.user}
+            <input type="text" id="bkProvNombre" placeholder="Nombre (cualquiera identificable)" value="${esc(pv.nombre||'')}" autofocus />
+          </div>
+          <button class="btn-ghost" id="bkCancelProv" style="margin-top:10px;">Cancelar</button>
+        `;
       }
       body.innerHTML = html;
 
       const R = this.shadowRoot;
-      if (!adding) {
+      if (!adding && !addingProv) {
         const inp = R.getElementById('bkSearch');
         if (inp) {
           inp.addEventListener('input', (e) => {
             b.query = e.target.value;
             b.client = null;
+            // v0.4.0 — Si el operador empieza a buscar, se cancela el
+            // provisional en curso (ha decidido buscar cliente real).
+            b.provClient = null;
             clearTimeout(this._searchTimer);
             this._searchTimer = setTimeout(() => {
               this._sendToPage('buscar-cliente', { query: b.query });
@@ -1884,16 +2726,43 @@ input, textarea { font-family: inherit; }
           row.addEventListener('click', () => {
             const cid = row.dataset.cid;
             const c = (this._searchResults || []).find(x => x.contactId === cid);
-            if (c) { b.client = c; b.newClient = null; this._renderBookingSheet(); }
+            if (c) { b.client = c; b.newClient = null; b.provClient = null; this._renderBookingSheet(); }
           });
         });
         const newBtn = R.getElementById('bkNewClient');
         if (newBtn) newBtn.addEventListener('click', () => {
-          b.adding = true; b.client = null; b.newClient = { nombre:'', apellido:'', telefono:'', email:'' };
+          b.adding = true; b.client = null; b.newClient = { nombre:'', apellido:'', telefono:'', email:'' }; b.provClient = null;
           this._renderBookingBody();
           this._renderBookingFoot();
         });
-      } else {
+        // v0.4.0 — Botón cliente provisional
+        const provBtn = R.getElementById('bkProvClient');
+        if (provBtn) provBtn.addEventListener('click', () => {
+          b.addingProv = true; b.client = null; b.newClient = null; b.provClient = { nombre:'', esProvisional:true };
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+        // v0.5.4 — Quitar el cliente real seleccionado. Limpia también el
+        // cliente conservado entre aperturas, para que no reaparezca al
+        // volver a abrir el sheet.
+        const clientClearBtn = R.getElementById('bkClientClear');
+        if (clientClearBtn) clientClearBtn.addEventListener('click', () => {
+          b.client = null;
+          b.query = '';
+          this._searchResults = [];
+          this._clientePendiente = null;
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+        // v0.4.0 — Quitar chip de cliente provisional ya seleccionado
+        const provClearBtn = R.getElementById('bkProvClear');
+        if (provClearBtn) provClearBtn.addEventListener('click', () => {
+          b.provClient = null;
+          this._clientePendiente = null;
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+      } else if (adding) {
         const wire = (id, key) => {
           const el = R.getElementById(id);
           if (el) el.addEventListener('input', (e) => {
@@ -1907,6 +2776,30 @@ input, textarea { font-family: inherit; }
         wire('bkNcEmail', 'email');
         R.getElementById('bkCancelNew').addEventListener('click', () => {
           b.adding = false; b.newClient = null;
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+      } else {
+        // v0.4.0 — Listeners del mini-form provisional
+        const nombreEl = R.getElementById('bkProvNombre');
+        if (nombreEl) {
+          nombreEl.addEventListener('input', (e) => {
+            b.provClient = { ...(b.provClient||{esProvisional:true}), nombre: e.target.value };
+            this._renderBookingFoot();
+          });
+          // Enter = "Usar provisional" si hay nombre. Al confirmar el
+          // nombre, salimos del mini-form y volvemos al chip (mostrando
+          // el provisional ya listo). El operador avanzará al step 2.
+          nombreEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (b.provClient?.nombre || '').trim()) {
+              b.addingProv = false;
+              this._renderBookingBody();
+              this._renderBookingFoot();
+            }
+          });
+        }
+        R.getElementById('bkCancelProv').addEventListener('click', () => {
+          b.addingProv = false; b.provClient = null;
           this._renderBookingBody();
           this._renderBookingFoot();
         });
@@ -1941,6 +2834,25 @@ input, textarea { font-family: inherit; }
       }
 
       let html = '';
+
+      // v0.6.0 — Líneas ya añadidas a la cita, arriba del catálogo.
+      // Cada una con su precio y botón para quitarla. Paridad con el
+      // bloque de armado del Desktop (_renderArmedHint).
+      if (b.lineas.length) {
+        html += `<div style="margin-bottom:14px;">
+          <span class="field-label">En esta cita (${b.lineas.length})</span>`;
+        b.lineas.forEach((l, i) => {
+          html += `
+            <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);margin-bottom:6px;">
+              <span style="width:20px;height:20px;border-radius:50%;background:var(--orange);color:#fff;font-size:10px;font-weight:700;display:grid;place-items:center;flex:0 0 auto;">${i + 1}</span>
+              <span style="flex:1;min-width:0;font-size:12.5px;font-weight:500;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(this._labelDeLinea(l))}</span>
+              <span class="svc-meta">${esc(String(this._precioDeLinea(l)))}€</span>
+              <button class="btn-ghost" data-rmlinea="${i}" style="padding:4px 9px;">✕</button>
+            </div>`;
+        });
+        html += `</div>`;
+      }
+
       for (const g in groups) {
         const list = groups[g].sort((a,b) => (a.order||999) - (b.order||999));
         const isExp = (b.expandedGroup === g);
@@ -1961,12 +2873,43 @@ input, textarea { font-family: inherit; }
               </div>`;
             if (isSel) {
               html += this._renderAddonPanel();
+              // v0.6.3 — El botón de armado múltiple va PEGADO al servicio
+              // elegido, no al final del catálogo. En v0.6.2 quedaba tras
+              // todos los grupos y había que hacer scroll hasta abajo para
+              // verlo: en móvil, invisible en la práctica.
+              html += `
+                <button class="new-client-btn" id="bkAddLinea" style="margin-top:8px;margin-bottom:10px;">
+                  <span class="plus">+</span> Añadir otro servicio a esta cita
+                </button>`;
             }
           }
         }
         html += `</div>`;
       }
+
       body.innerHTML = html;
+
+      // v0.6.1 — Listener del botón de armado múltiple. Vive aquí y no en
+      // _wireAddonEvents porque ese solo se ejecuta cuando hay panel de
+      // addons, y el botón debe funcionar también en servicios simples.
+      const addLineaBtn = body.querySelector('#bkAddLinea');
+      if (addLineaBtn) {
+        addLineaBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!this._añadirLineaActual()) return;
+          this._toast(`${b.lineas.length} servicio${b.lineas.length > 1 ? 's' : ''} en la cita`);
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+      }
+
+      // v0.6.0 — Quitar una línea ya añadida
+      body.querySelectorAll('[data-rmlinea]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._quitarLinea(parseInt(btn.dataset.rmlinea, 10));
+        });
+      });
 
       // v0.3.1 — Click en cabecera = toggle de grupo (acordeón estricto)
       body.querySelectorAll('.cat-head').forEach(head => {
@@ -1987,8 +2930,11 @@ input, textarea { font-family: inherit; }
           if (b.service && b.service.setupUid === svc.setupUid) return;
           b.service = svc;
           // v0.3.0 — reset addons locales al cambiar de servicio
-          b.variantIdx = 0;
+          // v0.5.0 — variantIdx arranca en -1 (base M del catálogo)
+          // v0.6.0 — solo resetea la LÍNEA EN EDICIÓN; b.lineas intacto.
+          b.variantIdx = -1;
           b.complementosSel = {};
+          b.exclusivosSel = {};
           this._renderBookingBody();
           this._renderBookingFoot();
         });
@@ -2010,12 +2956,43 @@ input, textarea { font-family: inherit; }
       let html = `<div class="addon-panel">`;
 
       if (variantes.length) {
+        // v0.5.0 — Se antepone la variante BASE del propio catálogo
+        // (svc.label + svc.price + svc.duration) como primera opción.
+        // Es lo que actúa como "M" en un servicio simple_variantes
+        // (Corte Mujer M/L/XL). Antes se pintaban SOLO las variantes
+        // del array svc.variantes[] → la base no era seleccionable y
+        // el operador se veía obligado a elegir siempre L, XL, etc.
+        // aunque el cliente quisiera la M base.
+        //
+        // Estado: b.variantIdx === -1 significa BASE; b.variantIdx >= 0
+        // señala la posición en svc.variantes[]. Al confirmar, si -1
+        // NO se envía varianteSel; el backend usa base como siempre.
+        const baseLabelRaw = svc.label || 'Base';
+        const basePrice = Number(svc.price) || 0;
+        const baseDur = Number(svc.duration) || 0;
+        const baseMeta = [];
+        if (basePrice > 0) baseMeta.push(`${basePrice}€`);
+        if (baseDur > 0) baseMeta.push(`${baseDur}′`);
+        const baseMetaTxt = baseMeta.length ? ` · ${baseMeta.join(' · ')}` : '';
+        const isSelBase = b.variantIdx === -1;
         html += `<div class="addon-block"><span class="alabel">Variante</span>
-          <div class="chips" data-ag="__variant">`;
+          <div class="chips" data-ag="__variant">
+            <button class="chip ${isSelBase?'sel':''}" data-vi="-1">${esc(baseLabelRaw)}${baseMetaTxt}</button>`;
         variantes.forEach((v, i) => {
           const label = (typeof v === 'string') ? v : (v.label || ('Variante ' + (i + 1)));
+          // v0.5.0 — pintar también precio y duración de la variante
+          // (antes solo label). Necesario para que el operador vea el
+          // impacto de elegir L o XL sobre precio/duración.
+          const vPriceRaw = (typeof v === 'object') ? (v.precio != null ? v.precio : v.price) : null;
+          const vDurRaw = (typeof v === 'object') ? (v.duracion != null ? v.duracion : v.duration) : null;
+          const vPrice = (vPriceRaw != null) ? Number(vPriceRaw) : NaN;
+          const vDur = (vDurRaw != null) ? Number(vDurRaw) : NaN;
+          const meta = [];
+          if (!isNaN(vPrice) && vPrice > 0) meta.push(`${vPrice}€`);
+          if (!isNaN(vDur) && vDur > 0) meta.push(`${vDur}′`);
+          const metaTxt = meta.length ? ` · ${meta.join(' · ')}` : '';
           const isSel = b.variantIdx === i;
-          html += `<button class="chip ${isSel?'sel':''}" data-vi="${i}">${esc(label)}</button>`;
+          html += `<button class="chip ${isSel?'sel':''}" data-vi="${i}">${esc(label)}${metaTxt}</button>`;
         });
         html += `</div></div>`;
       }
@@ -2067,18 +3044,78 @@ input, textarea { font-family: inherit; }
         }
       }
 
+      // v0.4.0 — GRUPO EXCLUSIVO (Punto 1). Cada item tipo:'exclusivo' del
+      // svc.mapeoFases se pinta como un mini-selector con chips radio-like:
+      // primero "No añadir", luego una opción por cada ref válido leída
+      // del catálogo vivo (this._serviciosMap, indexado por setupUid).
+      // Estado en b.exclusivosSel[groupKey] (uid del elegido) o ausencia
+      // = "No añadir". Patrón literal Desktop v1.1.59.
+      const mapeoParaExcl = Array.isArray(svc.mapeoFases)
+        ? svc.mapeoFases
+        : (typeof svc.mapeoFases === 'string' ? this._tryParseArr(svc.mapeoFases) : []);
+      const exclusivos = Array.isArray(mapeoParaExcl)
+        ? mapeoParaExcl
+            .map((f, idx) => ({ f, idx }))
+            .filter(x => x.f && x.f.tipo === 'exclusivo' && Array.isArray(x.f.refs) && x.f.refs.length > 0)
+        : [];
+      if (exclusivos.length) {
+        html += `<div class="addon-block"><span class="alabel">Grupo exclusivo <span style="color:var(--muted);font-weight:400">· elige uno o ninguno</span></span></div>`;
+        for (const { f, idx } of exclusivos) {
+          const groupKey = 'exc:' + idx;
+          const selUid = b.exclusivosSel && b.exclusivosSel[groupKey];
+          const opts = f.refs
+            .map(r => this._serviciosMap[r])
+            .filter(Boolean);
+          const labelGrupo = (typeof f.label === 'string' && f.label.trim()) ? f.label.trim() : 'Grupo';
+          const noneActive = !selUid;
+          html += `<div class="addon-block" data-excl-group="${esc(groupKey)}">
+            <span class="alabel" style="color:#c04a4a">🎯 ${esc(labelGrupo)}</span>
+            <div class="chips" data-excl-vars="${esc(groupKey)}">
+              <button class="chip ${noneActive?'sel':''}" data-excl-gk="${esc(groupKey)}" data-excl-uid="">No añadir</button>`;
+          for (const svcRef of opts) {
+            const isSel = selUid === svcRef.setupUid;
+            const priceRaw = Number(svcRef.price);
+            const durRaw = Number(svcRef.duration);
+            const meta = [];
+            if (!isNaN(priceRaw) && priceRaw > 0) meta.push(`+${priceRaw}€`);
+            if (!isNaN(durRaw) && durRaw > 0) meta.push(`${durRaw}′`);
+            const metaTxt = meta.length ? ` · ${meta.join(' · ')}` : '';
+            html += `<button class="chip ${isSel?'sel':''}" data-excl-gk="${esc(groupKey)}" data-excl-uid="${esc(svcRef.setupUid)}">${esc(svcRef.label || '')}${metaTxt}</button>`;
+          }
+          html += `</div></div>`;
+        }
+      }
+
       html += `</div>`;
       return html;
+    }
+
+    // v0.4.0 — Helper defensivo para leer mapeoFases si viene como string.
+    // El motor recepcionProLogic v1.0.36 lo devuelve como Array pero
+    // legacy podría llegar como JSON string; defensivo, no cambia
+    // comportamiento cuando ya es Array.
+    _tryParseArr(s) {
+      try {
+        const p = JSON.parse(s);
+        if (Array.isArray(p)) return p;
+        if (p && Array.isArray(p.items)) return p.items;
+        return [];
+      } catch (e) { return []; }
     }
 
     _wireAddonEvents() {
       const body = this.shadowRoot.getElementById('bookBody');
       const b = this._booking;
       // Chips de variante del PRINCIPAL (selección de índice)
+      // v0.5.0 — El valor `-1` señala la BASE del catálogo (variante M).
+      //   Antes: `parseInt(chip.dataset.vi, 10) || 0` colapsaba -1
+      //   incorrectamente porque -1 es truthy y sí pasa (`|| 0` sí lo
+      //   deja), pero se documenta explícitamente para no confundir.
       body.querySelectorAll('.chips .chip[data-vi]').forEach(chip => {
         chip.addEventListener('click', (e) => {
           e.stopPropagation();
-          const vi = parseInt(chip.dataset.vi, 10) || 0;
+          const viRaw = parseInt(chip.dataset.vi, 10);
+          const vi = Number.isInteger(viRaw) ? viRaw : -1;
           b.variantIdx = vi;
           this._renderBookingBody();
           this._renderBookingFoot();
@@ -2130,6 +3167,24 @@ input, textarea { font-family: inherit; }
           this._renderBookingFoot();
         });
       });
+      // v0.4.0 — GRUPO EXCLUSIVO (Punto 1). Radio-like: click en una opción
+      // deselecciona cualquier otra del mismo grupo. Si es "No añadir"
+      // (data-excl-uid vacío), borra la selección del grupo. Estado en
+      // b.exclusivosSel[groupKey]. Los grupos exclusivos son SIEMPRE
+      // opcionales (motor: mín. 0, máx. 1); nunca bloquean el avance de
+      // step 2 → step 3 (ver _canAdvanceStep, sin cambios en v0.4.0).
+      body.querySelectorAll('.chip[data-excl-gk]').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const gk = chip.dataset.exclGk;
+          const uid = chip.dataset.exclUid || '';
+          if (!b.exclusivosSel) b.exclusivosSel = {};
+          if (uid) b.exclusivosSel[gk] = uid;
+          else delete b.exclusivosSel[gk];
+          this._renderBookingBody();
+          this._renderBookingFoot();
+        });
+      });
     }
 
     // ── STEP 3: empleado + hora ──
@@ -2176,38 +3231,39 @@ input, textarea { font-family: inherit; }
     }
 
     // ── STEP 4: confirmar ──
+    //   v0.6.0 — Lista TODAS las líneas de la cita con su precio y el
+    //   total. Un solo pack, un solo cobro; cada servicio se pintará como
+    //   su propio bloque en el calendario.
     _renderStepConfirm(body) {
       const b = this._booking;
       const cl = this._currentClientLabel();
       const isNew = !b.client && !!b.newClient && (b.newClient.nombre || b.newClient.apellido);
       const empName = (this._getVisibleStaff().find(s => s.id === b.emp) || {}).name || b.emp;
-      const svcLabel = b.service?.label || '';
-      // v0.3.0 — Resumen V2: variante + complementos seleccionados
-      const extras = [];
-      const svc = b.service;
-      if (svc) {
-        const variantes = (svc.hasVariants && Array.isArray(svc.variantes)) ? svc.variantes : [];
-        if (variantes.length) {
-          const v = variantes[b.variantIdx || 0];
-          const vLabel = (typeof v === 'string') ? v : (v?.label || '');
-          if (vLabel) extras.push(`Variante: ${vLabel}`);
+
+      const lineasHTML = b.lineas.map((l, i) => {
+        const extras = [];
+        const svcComps = Array.isArray(l.svc.complementos) ? l.svc.complementos : [];
+        for (const c of svcComps) {
+          if (l.complementosSel && l.complementosSel[c.setupUid]) extras.push(c.label);
         }
-        const compl = Array.isArray(svc.complementos) ? svc.complementos : [];
-        for (const c of compl) {
-          if (b.complementosSel[c.setupUid]) extras.push(c.label);
-        }
-      }
+        return `
+          <div class="confirm-row">
+            <span class="ck">${i === 0 ? 'Servicios' : ''}</span>
+            <span class="cv">${esc(this._labelDeLinea(l))} · ${esc(String(this._precioDeLinea(l)))}€
+              ${extras.length ? `<span class="extra">${esc(extras.join(' · '))}</span>` : ''}
+            </span>
+          </div>`;
+      }).join('');
+
+      const total = this._totalLineas();
+      const nLineas = b.lineas.length;
+
       body.innerHTML = `
         <div class="confirm-row">
           <span class="ck">Cliente</span>
-          <span class="cv">${esc(cl)}${isNew?'<span class="extra">Nuevo cliente</span>':''}</span>
+          <span class="cv">${esc(cl)}${isNew ? '<span class="extra">Nuevo cliente</span>' : ''}</span>
         </div>
-        <div class="confirm-row">
-          <span class="ck">Servicio</span>
-          <span class="cv">${esc(svcLabel)}
-            ${extras.length ? `<span class="extra">${esc(extras.join(' · '))}</span>` : ''}
-          </span>
-        </div>
+        ${lineasHTML}
         <div class="confirm-row">
           <span class="ck">Empleado</span>
           <span class="cv">${esc(empName)}</span>
@@ -2215,6 +3271,12 @@ input, textarea { font-family: inherit; }
         <div class="confirm-row">
           <span class="ck">Fecha</span>
           <span class="cv">${esc(this._fecha)} · ${esc(b.time || '')}</span>
+        </div>
+        <div class="confirm-row">
+          <span class="ck">Total</span>
+          <span class="cv" style="font-size:16px;font-weight:700;color:var(--orange)">${esc(String(total))}€
+            ${nLineas > 1 ? `<span class="extra">${nLineas} servicios · un solo cobro</span>` : ''}
+          </span>
         </div>
       `;
     }
@@ -2228,9 +3290,13 @@ input, textarea { font-family: inherit; }
       b.creating = true;
       this._renderBookingFoot();
 
-      // contactDetails
+      // contactDetails + esProvisional
+      // v0.4.0 — Cliente provisional (Punto 3): objeto local con nombre
+      // solo, no persiste en CRM. Se propaga esProvisional:true en el
+      // payload; backend crearPackReserva v1.0.6+ salta ensureContactInCRM.
       let contactDetails;
       let memberContactId = null;
+      let esProvisional = false;
       if (b.client) {
         memberContactId = b.client.contactId;
         const parts = String(b.client.nombreCompleto || '').trim().split(/\s+/);
@@ -2247,44 +3313,47 @@ input, textarea { font-family: inherit; }
           email: b.newClient.email || '',
           phone: b.newClient.telefono || ''
         };
+      } else if (b.provClient && b.provClient.nombre) {
+        // v0.4.0 — Provisional. Split del nombre en firstName + lastName por
+        // si el operador metió varios espacios, mismo criterio que Desktop
+        // v1.1.12. Sin email ni teléfono; el backend no envía comunicaciones.
+        const parts = String(b.provClient.nombre || '').trim().split(/\s+/);
+        contactDetails = {
+          firstName: parts[0] || '',
+          lastName: parts.slice(1).join(' ') || '',
+          email: '',
+          phone: ''
+        };
+        memberContactId = '';
+        esProvisional = true;
       } else {
         b.creating = false;
         this._toast('Selecciona un cliente');
         return;
       }
 
-      // v0.3.9 — Payload V2 con complementos string/objeto.
-      // complementosSel[uid] puede ser:
-      //   · true                   → complemento simple → string uid.
-      //   · { varianteIdx }        → complemento con variante elegida →
-      //                              objeto { uid, varianteId, varianteLabel,
-      //                              price, duration }. Backend
-      //                              crearPackReserva v1.0.30 ya lo procesa.
-      const principalSetupUid = b.service?.setupUid || '';
-      const svcComps = (b.service && Array.isArray(b.service.complementos)) ? b.service.complementos : [];
-      const complementosSetupUid = [];
-      for (const uid of Object.keys(b.complementosSel || {})) {
-        const val = b.complementosSel[uid];
-        if (val === true) {
-          complementosSetupUid.push(uid);
-        } else if (val && typeof val === 'object' && Number.isInteger(val.varianteIdx)) {
-          const c = svcComps.find(x => x.setupUid === uid);
-          const v = (c && Array.isArray(c.variantes)) ? c.variantes[val.varianteIdx] : null;
-          if (v) {
-            const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || '');
-            const vId = (typeof v === 'object' && v.tamano_estilo) ? v.tamano_estilo : String(val.varianteIdx);
-            const vPrice = (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) || 0 : 0;
-            const vDur = (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) || 0 : 0;
-            complementosSetupUid.push({
-              uid,
-              varianteId: vId,
-              varianteLabel: vLabel,
-              price: vPrice,
-              duration: vDur
-            });
-          }
-        }
+      // v0.6.0 — ARMADO MÚLTIPLE. La PRIMERA línea crea la reserva con
+      // crearPackReserva. Las demás quedan en b.cadenaPendiente y se
+      // añaden a ESA MISMA reserva con agregarServicioReserva en cuanto
+      // llega 'reserva-creada' OK. Paridad literal con la cadena del
+      // Desktop v1.1.81 (case 'reservaCreada' → _enviarAgregarServicio).
+      // Resultado: un pack, un total, un cobro; cada servicio pintado
+      // como su propio bloque (una .appt por fase ocupante).
+      if (!b.lineas.length) {
+        b.creating = false;
+        this._toast('Añade al menos un servicio');
+        return;
       }
+
+      const primera = b.lineas[0];
+      b.cadenaPendiente = b.lineas.slice(1);
+      b.cadenaReservaId = null;
+
+      const principalSetupUid = primera.svc?.setupUid || '';
+      const complementosSetupUid = this._complementosDeLinea(
+        primera.svc, primera.complementosSel, primera.exclusivosSel
+      );
+      const varianteSel = this._varianteSelDeLinea(primera.svc, primera.variantIdx);
 
       // staffName de la lista de staff visibles (para que el backend lo
       // grabe en la reserva — mismo patrón que desktop V2).
@@ -2299,7 +3368,12 @@ input, textarea { font-family: inherit; }
         empleadoId: b.emp,
         staffName,
         contactDetails,
-        memberContactId
+        memberContactId,
+        // v0.4.0 — bandera de cliente provisional. El pagecode ya acepta
+        // este campo. Backend salta ensureContactInCRM cuando es true.
+        esProvisional,
+        // v0.5.0 — Variante del principal (null si base).
+        varianteSel
       };
 
       console.log(`${TAG} 📨 crear-reserva`, payload);
@@ -2320,14 +3394,83 @@ input, textarea { font-family: inherit; }
       const b = this._booking;
       b.creating = false;
       if (p?.ok) {
+        // v0.6.0 — ARMADO MÚLTIPLE. Si quedan líneas, ESTA reserva es la
+        // cita contenedora y el resto de servicios se añaden dentro de
+        // ella. Mismo patrón que Desktop v1.1.81 (case 'reservaCreada').
+        // No se marca done hasta que la cadena termina.
+        const reservaId = p.reservaId || p._id || '';
+        if (b.cadenaPendiente && b.cadenaPendiente.length && reservaId) {
+          b.cadenaReservaId = reservaId;
+          b.creating = true;
+          this._enviarSiguienteDeCadena();
+          this._renderBookingSheet();
+          return;
+        }
         b.done = true;
         b.doneData = p;
+        // v0.5.5 — El cliente SOBREVIVE a la reserva creada. Paridad con
+        // Recepción PRO Desktop: su case 'reservaCreada' hace _desarmar()
+        // (resetea el servicio) pero NUNCA toca this._cliente, que vive en
+        // el aside y persiste.
+        // Caso de uso real: una madre reserva su corte + el del hijo + el
+        // de la hija. Con la limpieza de v0.5.4 había que volver a buscar
+        // a la clienta después de cada reserva.
+        this._guardarClientePendiente(true);
         this._renderBookingSheet();
       } else {
         const msg = p?.error?.message || 'Error al crear la reserva';
         this._toast(msg);
         this._renderBookingFoot();
       }
+    }
+
+    // v0.6.0 — Envía la siguiente línea pendiente al page code, que la
+    // añade a la cita contenedora con agregarServicioReserva. El backend
+    // la encadena a partir de MAX(end) de las fases ocupantes, así que
+    // los servicios quedan uno detrás de otro con el mismo profesional.
+    _enviarSiguienteDeCadena() {
+      const b = this._booking;
+      const linea = b.cadenaPendiente[0];
+      if (!linea || !b.cadenaReservaId) return;
+      this._toast(`Añadiendo ${this._labelDeLinea(linea)}…`);
+      this._sendToPage('agregar-servicio', {
+        reservaId: b.cadenaReservaId,
+        setupUid: linea.svc?.setupUid || '',
+        varianteSel: this._varianteSelDeLinea(linea.svc, linea.variantIdx),
+        complementosSetupUid: this._complementosDeLinea(
+          linea.svc, linea.complementosSel, linea.exclusivosSel
+        )
+      });
+    }
+
+    // v0.6.0 — Respuesta a 'agregar-servicio'. Consume la cola y, cuando
+    // se vacía, cierra el flujo como una reserva normal.
+    _onServicioAgregado(p) {
+      const b = this._booking;
+      if (!p?.ok) {
+        b.creating = false;
+        const msg = p?.error?.message || p?.error || 'No se pudo añadir el servicio';
+        this._toast(`Error: ${msg}`);
+        // La cita contenedora SÍ existe: se cierra el sheet y se refresca
+        // para que el operador vea lo que sí ha entrado y decida.
+        b.done = true;
+        b.doneData = { reservaId: b.cadenaReservaId };
+        this._guardarClientePendiente(true);
+        this._renderBookingSheet();
+        this._sendToPage('get-reservas-dia', { fecha: this._fecha });
+        return;
+      }
+      b.cadenaPendiente.shift();
+      if (b.cadenaPendiente.length) {
+        this._enviarSiguienteDeCadena();
+        return;
+      }
+      b.creating = false;
+      b.done = true;
+      b.doneData = { reservaId: b.cadenaReservaId, precioTotal: p.precioTotal };
+      this._guardarClientePendiente(true);
+      this._renderBookingSheet();
+      this._sendToPage('get-reservas-dia', { fecha: this._fecha });
     }
 
     // v0.3.2 — Tras cancelar: cerrar detail, toast, refrescar día.
@@ -2383,21 +3526,45 @@ input, textarea { font-family: inherit; }
       const b = this._bloqueo;
       const visible = this._getVisibleStaff();
 
-      const DURACIONES = [15, 30, 45, 60, 90, 120];
+      // v0.4.0 — Bloqueos (Punto 4). Añadidos "Día completo" y
+      // "Personalizado" a los chips fijos [15,30,45,60,90,120].
+      //   · Día completo: bloquea de 09:00 a 21:00 = 720 min. Fija además
+      //     b.time = '09:00' automáticamente para que abarque toda la jornada.
+      //   · Personalizado: activa un input numérico con la duración libre
+      //     (mín. 5, máx. 720). Backend crearBloqueo (recepcionProLogic
+      //     v1.0.20 desplegado) acepta cualquier duracionMin >= 5.
+      //
+      // Constantes de rango horario (mismas que CAL_START_H/CAL_END_H del
+      // calendario del widget, líneas 250 aprox).
+      const FULL_DAY_MIN = (CAL_END_H - CAL_START_H) * 60;  // 720
+      const DURACIONES_FIJAS = [15, 30, 45, 60, 90, 120];
+      const esFija = DURACIONES_FIJAS.includes(b.duracionMin);
+      const esFullDay = b.duracionMin === FULL_DAY_MIN;
+      const esCustom = !esFija && !esFullDay;
 
       const body = this.shadowRoot.getElementById('bloqBody');
       body.innerHTML = `
         <div class="bl-field">
           <span class="bl-field-label">Hora de inicio</span>
-          <input class="bl-time-input" id="bloqTime" type="time" value="${esc(b.time)}" />
+          <input class="bl-time-input" id="bloqTime" type="time" value="${esc(b.time)}" ${esFullDay ? 'disabled' : ''} />
         </div>
         <div class="bl-field">
           <span class="bl-field-label">Duración</span>
           <div class="bl-chips">
-            ${DURACIONES.map(d => `
+            ${DURACIONES_FIJAS.map(d => `
               <button class="bl-chip ${b.duracionMin === d ? 'sel' : ''}" data-dur="${d}">${d} min</button>
             `).join('')}
+            <button class="bl-chip ${esFullDay ? 'sel' : ''}" data-dur="fullday" style="border-style:solid;font-weight:700;">Día completo</button>
+            <button class="bl-chip ${esCustom ? 'sel' : ''}" data-dur="custom" style="border-style:dashed;">Personalizado</button>
           </div>
+          ${esCustom ? `
+            <div style="margin-top:10px;display:flex;align-items:center;gap:10px;">
+              <input class="bl-time-input" id="bloqDurCustom" type="number" min="5" max="720" step="5" value="${b.duracionMin || 30}" style="flex:1;" />
+              <span style="color:var(--muted);font-size:13px;">minutos</span>
+            </div>
+            <div style="margin-top:6px;color:var(--muted);font-size:11.5px;">Mínimo 5 min · Máximo 720 min (12 h).</div>
+          ` : ''}
+          ${esFullDay ? `<div style="margin-top:8px;color:#a55b00;font-size:11.5px;font-style:italic;">Bloquea toda la jornada (${String(CAL_START_H).padStart(2,'0')}:00 – ${String(CAL_END_H).padStart(2,'0')}:00).</div>` : ''}
         </div>
         <div class="bl-field">
           <span class="bl-field-label">Empleado</span>
@@ -2418,7 +3585,20 @@ input, textarea { font-family: inherit; }
       // Listeners chips duración
       body.querySelectorAll('.bl-chip[data-dur]').forEach(chip => {
         chip.addEventListener('click', () => {
-          b.duracionMin = parseInt(chip.dataset.dur, 10) || 30;
+          const raw = chip.dataset.dur;
+          if (raw === 'fullday') {
+            // v0.4.0 — Día completo: bloquea toda la jornada. Fija hora de
+            // inicio a CAL_START_H (09:00) automáticamente.
+            b.duracionMin = FULL_DAY_MIN;
+            b.time = String(CAL_START_H).padStart(2, '0') + ':00';
+          } else if (raw === 'custom') {
+            // v0.4.0 — Personalizado: fija a un valor por defecto sensato
+            // (fuera de la lista fija) y muestra el input numérico. Si ya
+            // estamos en custom, no reseteamos (respetamos lo tecleado).
+            if (!esCustom) b.duracionMin = 25;  // valor por defecto custom
+          } else {
+            b.duracionMin = parseInt(raw, 10) || 30;
+          }
           this._renderBloqueoSheet();
         });
       });
@@ -2437,6 +3617,21 @@ input, textarea { font-family: inherit; }
       body.querySelector('#bloqMotivo').addEventListener('input', (e) => {
         b.motivo = e.target.value || '';
       });
+      // v0.4.0 — Listener input custom (duración libre en minutos).
+      const durCustomEl = body.querySelector('#bloqDurCustom');
+      if (durCustomEl) {
+        durCustomEl.addEventListener('input', (e) => {
+          let v = parseInt(e.target.value, 10);
+          if (isNaN(v)) return;
+          if (v < 5) v = 5;
+          if (v > FULL_DAY_MIN) v = FULL_DAY_MIN;
+          b.duracionMin = v;
+          // NO re-renderizamos aquí para no perder el foco del input.
+          // Solo actualizamos el foot para reflejar la disponibilidad
+          // del botón "Crear bloqueo".
+          this._renderBloqueoFoot();
+        });
+      }
 
       this._renderBloqueoFoot();
     }
@@ -2569,8 +3764,15 @@ input, textarea { font-family: inherit; }
     // ═══════════════════════════════════════════════════════════════════════
     // APPOINTMENT DETAIL
     // ═══════════════════════════════════════════════════════════════════════
-    _openApptDetail(r) {
-      this._detail = { open: true, data: r, canceling: false };
+    //   v0.4.0 — El detail acepta la FASE clicada como segundo parámetro
+    //   (opcional). Si viene, _renderDetailBody pinta un chip específico
+    //   con label/hora/duración de esa fase (útil cuando la reserva es
+    //   una cascada de 5+ fases y el operador clicó, p. ej., en "Lavado"
+    //   o "Peinado M"). Si no viene, se comporta como antes: muestra la
+    //   RESERVA completa (label del principal, hora total). Patrón
+    //   consistente con Desktop V2.
+    _openApptDetail(r, fase = null) {
+      this._detail = { open: true, data: r, fase, canceling: false };
       const R = this.shadowRoot;
       R.getElementById('detailScrim').classList.add('open');
       R.getElementById('detailSheet').classList.add('open');
@@ -2578,7 +3780,7 @@ input, textarea { font-family: inherit; }
     }
 
     _closeApptDetail() {
-      this._detail = { open: false, data: null };
+      this._detail = { open: false, data: null, fase: null };
       const R = this.shadowRoot;
       R.getElementById('detailScrim').classList.remove('open');
       R.getElementById('detailSheet').classList.remove('open');
@@ -2596,10 +3798,50 @@ input, textarea { font-family: inherit; }
       // v0.3.2 — Estado de cancelación (loading inline)
       const canceling = !!this._detail.canceling;
       const reservaId = raw?._id || raw?.reservaId || '';
+
+      // v0.4.0 — Chip de la fase clicada específicamente. Solo se pinta
+      // si el operador clicó en una fase concreta (no legacy) Y la
+      // reserva tiene 2+ fases (si es 1 sola, el chip aportaría info
+      // redundante con "Servicio"). El chip incluye label + hora inicio
+      // + duración de la fase concreta.
+      const faseClicada = this._detail.fase;
+      const fasesArr = Array.isArray(raw?.fases) ? raw.fases : (raw?.fases?.items || []);
+      const fasesOcupantes = fasesArr.filter(f => f && f.ocupa !== false);
+      const showFaseChip = !!faseClicada && fasesOcupantes.length > 1;
+      let faseChipHTML = '';
+      if (showFaseChip) {
+        const faseLabel = faseClicada.label || 'Fase';
+        const faseStartHHmm = (typeof isoToHHmmMadrid === 'function' && faseClicada.start)
+          ? isoToHHmmMadrid(faseClicada.start)
+          : '';
+        let faseDur = Number(faseClicada.dur) || 0;
+        if (!faseDur && faseClicada.end && faseClicada.start) {
+          const s = new Date(faseClicada.start).getTime();
+          const e = new Date(faseClicada.end).getTime();
+          if (!isNaN(s) && !isNaN(e)) faseDur = Math.max(0, Math.round((e - s) / 60000));
+        }
+        const durTxt = faseDur > 0 ? ` · ${faseDur} min` : '';
+        const horaTxt = faseStartHHmm ? ` · ${esc(faseStartHHmm)}` : '';
+        faseChipHTML = `
+          <div class="det-block" style="background:#fff7e0;border:1px solid #f0c879;border-radius:10px;padding:10px 12px;">
+            <span class="det-label" style="color:#a55b00;">Fase seleccionada</span>
+            <span class="det-value" style="color:#7a4500;font-weight:600;">🎯 ${esc(faseLabel)}${horaTxt}${durTxt}</span>
+          </div>
+        `;
+      }
+
+      // v0.4.0 — Badge cliente provisional (paridad con Desktop V2).
+      // Detección: reserva sin contactId y sin teléfono/email → paso.
+      const esProvisional = !raw?.contactId && !raw?.clientPhone && !raw?.clientEmail;
+      const provBadge = esProvisional
+        ? `<span style="display:inline-block;margin-left:8px;padding:2px 7px;border-radius:999px;background:#fff3d6;color:#a55b00;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;border:1px solid #f0c879;vertical-align:middle;">provisional</span>`
+        : '';
+
       body.innerHTML = `
+        ${faseChipHTML}
         <div class="det-block">
           <span class="det-label">Cliente</span>
-          <span class="det-value">${esc(r.cliente || '—')}</span>
+          <span class="det-value">${esc(r.cliente || '—')}${provBadge}</span>
         </div>
         <div class="det-block">
           <span class="det-label">Servicio</span>
@@ -2614,7 +3856,7 @@ input, textarea { font-family: inherit; }
           <span class="det-value det-staff"><span class="dot" style="background:${esc(color)}"></span>${esc(staff?.name || r.resourceId)}</span>
         </div>
         ${r.precio ? `<div class="det-block"><span class="det-label">Precio</span><span class="det-value">${esc(String(r.precio))}€</span></div>` : ''}
-        ${r.clientPhone ? `<div class="det-block"><span class="det-label">Teléfono</span><span class="det-value">${esc(r.clientPhone)}</span></div>` : ''}
+        ${r.clientPhone && !esProvisional ? `<div class="det-block"><span class="det-label">Teléfono</span><span class="det-value">${esc(r.clientPhone)}</span></div>` : ''}
         ${r.notes ? `<div class="det-block"><span class="det-label">Notas</span><span class="det-value">${esc(r.notes)}</span></div>` : ''}
         ${reservaId ? `
           <div class="det-actions">

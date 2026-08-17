@@ -1,8 +1,16 @@
 // =====================================================
 // KAMISUITE - Backend Unificado para Coloraciones
 // =====================================================
-// VERSION: 3.2.7-KAMISUITE
-// FECHA: 9 de mayo de 2026
+// VERSION: 3.2.8-KAMISUITE
+// FECHA: 26 de mayo de 2026
+//
+// CAMBIOS v3.2.8:
+// - FIX CRÍTICO: skipAvailability=true en APLICACIÓN y fases POST
+//   (crearComplementos), tanto desde web pública como desde recepción.
+//   La disponibilidad ya se valida en consultarDisponibilidadUnificada;
+//   Wix revalidaba cada fase individual causando SLOT_NOT_AVAILABLE
+//   aleatorios en reservas online válidas (misma race condition que
+//   tratamientosLogic v1.1.0).
 //
 // CAMBIOS v3.2.7:
 // - MIGRACIÓN A CENTRALITA DE COMUNICACIONES.
@@ -115,7 +123,10 @@ import { contacts, notifications } from 'wix-crm-backend';
 // v3.2.7: Centralita de comunicaciones
 import { notificarConfirmacion } from 'backend/comunicacionesLogic.web.js';
 
-const VERSION = '3.2.7-KAMISUITE';
+const VERSION = '3.2.8-KAMISUITE';
+// v3.2.8: skipAvailability=true en APLICACIÓN y fases POST (crearComplementos).
+//   Mismo fix que tratamientosLogic v1.1.0. Elimina SLOT_NOT_AVAILABLE por
+//   revalidación redundante de Wix en fases de cascada. origenRecepcion
 // v3.2.7: Migración a centralita comunicacionesLogic. Eliminado envío directo
 //   triggeredEmails y constante EMAIL_CONFIRMACION_ID. Sin cambios funcionales
 //   en reserva — solo en cómo se entrega la confirmación al cliente.
@@ -1649,6 +1660,8 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
     }
     if (!isGuid(empleadoIdInput)) throw new Error('empleadoId requerido');
 
+console.warn(`${TAG} 📅 Reserva entrante: fecha=${fechaISO} hora=${horaHHmm} servicio=${publicServiceId} peinado=${payload?.peinadoValue||'-'} tratamiento=${payload?.tratamientoValue||'-'} corte=${!!payload?.corteChecked} total=${!!payload?.totalChecked} cliente=${payload?.contactDetails?.firstName||''} ${payload?.contactDetails?.lastName||''} tel=${payload?.contactDetails?.phone||''} origen=${payload?.origen||'?'}`);
+
     let empleadoIdReal = empleadoIdInput;
     if (empleadoIdInput === STAFF_IDS.CUALQUIERA) {
       const item0 = await getMapeoByPublicServiceId(publicServiceId);
@@ -1777,7 +1790,7 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
       price: priceMap[idAplicacionReal],
       memberContactId,
       serviceInfo: serviceInfoMap[idAplicacionReal],
-      skipAvailability: origenRecepcion
+      skipAvailability: true
     });
 
     console.log(`${TAG} \u2705 Aplicaci\u00f3n confirmada con precio`);
@@ -1854,7 +1867,7 @@ export const confirmarEnCalendario = webMethod(Permissions.Anyone, async (payloa
               price: priceMap[fase.serviceId] || 0,
               memberContactId,
               serviceInfo: serviceInfoMap[fase.serviceId],
-              skipAvailability: origenRecepcion
+              skipAvailability: true
             });
           } catch (faseErr) {
             console.error(`${TAG} \u26a0\ufe0f Error creando fase ${fase.fase} (continuando con siguientes): ${faseErr.message}`);

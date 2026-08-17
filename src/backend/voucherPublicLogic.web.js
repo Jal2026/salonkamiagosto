@@ -1,8 +1,64 @@
 // =====================================================
 // KAMISUITE - Bonos (Página Pública) Backend
 // =====================================================
-// VERSION: 1.0.2
-// FECHA: 3 de julio de 2026
+// VERSION: 1.3.0
+// FECHA: 11 de agosto de 2026
+//
+// v1.3.0: 🔓 INTERRUPTOR GLOBAL "BONOS SIN PRIME".
+//   · Nuevo campo KamisuiteProductsConfig.vouchersSkipPrime (Booleano).
+//     Polaridad de APERTURA: false/vacío = se exige PRIME activo para
+//     comprar un bono (decisión A, comportamiento histórico); true = la
+//     venta queda libre. La polaridad es deliberada: un Booleano nuevo
+//     llega vacío en las filas existentes del CMS y el patrón `=== true`
+//     lo resuelve a false, de modo que el candado NO se cae solo al
+//     desplegar.
+//   · createVoucherCheckout: el guard de PRIME pasa a ser CONDICIONAL.
+//     Se sigue ejecutando buscarPrimeActiva en ambos casos, porque su
+//     _id alimenta primeMembershipId; con el interruptor abierto deja
+//     de ser bloqueante y, si el comprador no tiene PRIME, el bono se
+//     emite con primeMembershipId ''.
+//   · getVoucherCatalog: devuelve vouchersSkipPrime a nivel RAÍZ de la
+//     respuesta (no dentro de cada voucher: es configuración global del
+//     salón). Se lee dentro de la query a KamisuiteProductsConfig que
+//     esa función YA hacía para globalValidityMonths → cero queries
+//     nuevas. El page code lo transporta al bootstrap y el widget lo usa
+//     para no pintar el banner #primeGate.
+//   · CERO cambios en: getCurrentMemberVoucherStatus (sigue devolviendo
+//     isPrime, que el widget usa como dato), confirmVoucherPayment,
+//     cancelVoucherPayment, getVoucherSalonInfo, F7 (email), variantes,
+//     precios, códigos, caducidades y frecuencias.
+//   · El CANJE no se toca ni se ve afectado: nunca comprobó PRIME
+//     (decisión D-2, los bonos sobreviven al vencimiento de la PRIME).
+//   · Pareja backend presencial: especialesVentaLogic.web.js v1.1.0.
+//   · Pareja config: productosKamisuiteLogic.web.js v1.0.4.
+//
+// v1.2.0: 🏷️ PLAZO DE USO Y FRECUENCIA EN EL DETALLE DEL BONO (widget).
+//   · getVoucherCatalog AÑADE al objeto de cada bono tres campos de solo
+//     lectura para que el widget muestre en el DETALLE (no en la card) el
+//     plazo de uso y la frecuencia: bonusValidityDays (días; 0 = usar el
+//     global), bonusUseIntervalDays (días entre usos; 0 = USO LIBRE) y
+//     globalValidityMonths (fallback en meses de KamisuiteProductsConfig).
+//   · Criterio EXACTO de confirmVoucherPayment v1.1.0: si bonusValidityDays
+//     > 0 manda (días); si 0/vacío el plazo real es el global en meses. Así
+//     el detalle enseña lo mismo que se sella al emitir el bono.
+//   · Sin cambios en emisión, variantes, precios ni ninguna otra función.
+//     Solo se AÑADEN campos al shape de getVoucherCatalog (no se quita nada).
+//
+// v1.1.0: 📆 CADUCIDAD Y FRECUENCIA POR SERVICIO (en días).
+//   · Caducidad del bono en DÍAS naturales desde la emisión, definida
+//     por servicio en ServiceCatalog.bonusValidityDays (Number). Si el
+//     servicio la define (> 0) manda; si está vacía/0 cae al global en
+//     meses (KamisuiteProductsConfig.voucherValidityMonths), de modo que
+//     los servicios aún no configurados siguen emitiendo como hasta hoy.
+//   · Frecuencia mínima entre usos: ServiceCatalog.bonusUseIntervalDays
+//     (Number) se CONGELA en el bono al emitir (snapshot en
+//     KamisuiteVouchers.bonusUseIntervalDays). 0/vacío = LIBRE. El canje
+//     en Recepción PRO leerá ese campo del bono (no del servicio).
+//   · Cambio localizado en confirmVoucherPayment (releer servicio +
+//     cálculo días/meses + snapshot) y nuevo helper calcularExpirationDateDias.
+//   · Sin cambios en F7 (email), variantes, createVoucherCheckout ni
+//     ninguna otra función. La caducidad de los bonos ya vendidos NO se
+//     recalcula: expirationDate es un snapshot inmutable de la emisión.
 //
 // v1.0.2: 🎚️ SOPORTE DE VARIANTES en la fase de compra del bono.
 //   Un servicio del ServiceCatalog con hasVariants:true y variantes
@@ -125,8 +181,10 @@
 //   appliedDiscount = bonoDescuento (% guardado para histórico)
 //
 // VALIDEZ:
-//   expirationDate = issueDate + KamisuiteProductsConfig.voucherValidityMonths
-//   (default 12 meses, decisión D-1).
+//   Por servicio (v1.1.0): si ServiceCatalog.bonusValidityDays > 0 →
+//     expirationDate = issueDate + bonusValidityDays (días naturales).
+//   Fallback global: si no → issueDate + voucherValidityMonths (meses,
+//     default 12, decisión D-1).
 //
 // CÓDIGO ÚNICO:
 //   Formato BN-XXXX-XXXX. Unicidad verificada por query.
@@ -138,7 +196,7 @@
 //     confirmVoucherPayment, cancelVoucherPayment: Permissions.SiteMember.
 //
 // CMS REFERENCIADOS:
-//   · ServiceCatalog              (read-only: catálogo de servicios).
+//   · ServiceCatalog              (read-only: catálogo + bonusValidityDays / bonusUseIntervalDays).
 //   · KamisuiteProductsConfig     (read-only: voucherValidityMonths).
 //   · KamisuitePrimeMemberships   (read-only: verificar PRIME activo).
 //   · KamisuiteVouchers           (insert/update: bonos emitidos).
@@ -150,6 +208,12 @@
 // v1.0.2 - Soporte de variantes: 1 card por servicio con array
 //          variantes[] para chips en el widget; voucherKey compuesta;
 //          serviceLabel con sufijo " · <variante>".
+// v1.2.0 - getVoucherCatalog expone bonusValidityDays, bonusUseIntervalDays
+//          y globalValidityMonths (solo lectura) para el detalle del bono.
+// v1.1.0 - Caducidad por servicio en DÍAS (ServiceCatalog.bonusValidityDays,
+//          con fallback a voucherValidityMonths global) + snapshot de la
+//          frecuencia mínima entre usos (bonusUseIntervalDays) en el bono
+//          al emitir. Cambio localizado en confirmVoucherPayment + helper.
 // =====================================================
 
 import { Permissions, webMethod } from 'wix-web-module';
@@ -159,7 +223,7 @@ import { currentMember } from 'wix-members-backend';
 // v1.0.1 — F7: email triggered de confirmación de compra
 import { triggeredEmails } from 'wix-crm-backend';
 
-const TAG = '[VoucherPublic][1.0.2]';
+const TAG = '[VoucherPublic][1.3.0]';
 
 const CMS_CATALOG = 'ServiceCatalog';
 const CMS_CONFIG = 'KamisuiteProductsConfig';
@@ -205,6 +269,15 @@ async function generarCodigoUnico() {
 function calcularExpirationDate(issueDate, validityMonths) {
   const dt = new Date(issueDate.getTime());
   dt.setMonth(dt.getMonth() + (validityMonths || 12));
+  return dt;
+}
+
+// v1.1.0 — Caducidad en DÍAS naturales desde la emisión (validez por
+// servicio). Se usa cuando ServiceCatalog.bonusValidityDays > 0; si no,
+// se mantiene el cálculo en meses de calcularExpirationDate().
+function calcularExpirationDateDias(issueDate, validityDays) {
+  const dt = new Date(issueDate.getTime());
+  dt.setDate(dt.getDate() + validityDays);
   return dt;
 }
 
@@ -403,11 +476,38 @@ export const getVoucherCatalog = webMethod(
       const conBono = items.filter(c => c.bonoActivo === true);
       console.log(`${TAG} 📊 Servicios con bonoActivo===true: ${conBono.length} / ${items.length}`);
 
+      // v1.2.0 — Plazo global (meses) leído UNA vez, para el fallback del
+      // plazo de uso cuando el servicio no define bonusValidityDays. Mismo
+      // origen que confirmVoucherPayment (KamisuiteProductsConfig).
+      let globalValidityMonths = 12;
+      // v1.3.0 — Interruptor global "bonos sin PRIME". Se lee en ESTA MISMA
+      // query (cero queries nuevas). Polaridad de apertura: false/vacío =
+      // se exige PRIME (comportamiento histórico).
+      let vouchersSkipPrime = false;
+      try {
+        const cfgRes = await wixData.query(CMS_CONFIG).limit(1).find({ suppressAuth: true });
+        if (cfgRes.items.length > 0 && typeof cfgRes.items[0].voucherValidityMonths === 'number') {
+          globalValidityMonths = cfgRes.items[0].voucherValidityMonths;
+        }
+        if (cfgRes.items.length > 0) {
+          vouchersSkipPrime = cfgRes.items[0].vouchersSkipPrime === true;
+        }
+      } catch (_) {}
+
       const vouchers = conBono.map(c => {
         const setupUid = c.setupUid || c._id;
         const numero = (typeof c.bonoNumero === 'number') ? c.bonoNumero : 0;
         const descuento = (typeof c.bonoDescuento === 'number') ? c.bonoDescuento : 0;
         const baseLabel = c.label || '';
+
+        // v1.2.0 — Plazo de uso y frecuencia por servicio (solo lectura para
+        // el widget). Criterio idéntico a confirmVoucherPayment v1.1.0.
+        const bonusValidityDays = (typeof c.bonusValidityDays === 'number' && c.bonusValidityDays > 0)
+          ? Math.floor(c.bonusValidityDays)
+          : 0;   // 0 = usar plazo global en meses (globalValidityMonths)
+        const bonusUseIntervalDays = (typeof c.bonusUseIntervalDays === 'number' && c.bonusUseIntervalDays > 0)
+          ? Math.floor(c.bonusUseIntervalDays)
+          : 0;   // 0 = USO LIBRE
 
         // Detectar variantes válidas del servicio (mismo criterio que
         // aplicaremos también en createVoucherCheckout para consistencia).
@@ -460,15 +560,23 @@ export const getVoucherCatalog = webMethod(
           precioBono,
           voucherKey,
           hasVariants,
-          variantes: variantesOut
+          variantes: variantesOut,
+          // v1.2.0 — Plazo de uso y frecuencia (solo lectura) para el detalle.
+          bonusValidityDays,
+          bonusUseIntervalDays,
+          globalValidityMonths
         };
       });
 
-      return { success: true, vouchers };
+      // v1.3.0 — vouchersSkipPrime viaja junto al catálogo. El page code lo
+      // transporta al bootstrap y el widget decide si pinta el banner
+      // #primeGate. Nivel raíz de la respuesta, NO dentro de cada voucher:
+      // es configuración global del salón, no propiedad del bono.
+      return { success: true, vouchers, vouchersSkipPrime };
 
     } catch (error) {
       console.error(`${TAG} ❌ getVoucherCatalog:`, error);
-      return { success: false, vouchers: [], error: error.message };
+      return { success: false, vouchers: [], vouchersSkipPrime: false, error: error.message };
     }
   }
 );
@@ -578,13 +686,34 @@ export const createVoucherCheckout = webMethod(
       }
 
       // Decisión A: requiere PRIME activo.
+      //
+      // v1.3.0 — El candado es ahora CONDICIONAL al interruptor global
+      // KamisuiteProductsConfig.vouchersSkipPrime:
+      //   · false / vacío → se exige PRIME activo (comportamiento
+      //     histórico literal, sin cambios).
+      //   · true          → la venta queda libre. Se sigue BUSCANDO la
+      //     PRIME (no se salta la query) porque su _id alimenta
+      //     primeMembershipId en el registro del bono; simplemente deja
+      //     de ser bloqueante. Si el comprador no tiene PRIME, el bono
+      //     se emite con primeMembershipId vacío.
+      let skipPrime = false;
+      try {
+        const cfgResSkip = await wixData.query(CMS_CONFIG).limit(1).find({ suppressAuth: true });
+        if (cfgResSkip.items.length > 0) {
+          skipPrime = cfgResSkip.items[0].vouchersSkipPrime === true;
+        }
+      } catch (_) {}
+
       const prime = await buscarPrimeActiva(buyerContactId);
-      if (!prime) {
+      if (!prime && !skipPrime) {
         return {
           success: false,
           needsPrime: true,
           error: 'Los bonos están reservados a miembros PRIME. Hazte PRIME primero.'
         };
+      }
+      if (!prime) {
+        console.log(`${TAG} 🔓 vouchersSkipPrime activo — venta sin PRIME para contacto ${buyerContactId}`);
       }
 
       // 2) Cargar el servicio del catálogo.
@@ -702,7 +831,11 @@ export const createVoucherCheckout = webMethod(
         paymentMethod: 'Wix Pay',
         paymentId: '',
         paymentReservationId: '',
-        primeMembershipId: prime._id,
+        // v1.3.0 — Con vouchersSkipPrime activo el comprador puede no tener
+        // PRIME: en ese caso el vínculo queda vacío. Con el candado puesto,
+        // prime SIEMPRE existe aquí (el guard ya habría cortado antes) y el
+        // valor es idéntico al histórico.
+        primeMembershipId: prime ? prime._id : '',
         status: 'PENDING',
         salonId: ''
       };
@@ -911,6 +1044,34 @@ export const confirmVoucherPayment = webMethod(
       }
 
       // Calcular fechas.
+      // v1.1.0 — Caducidad y frecuencia POR SERVICIO. Releemos el servicio
+      // del catálogo por serviceSetupUid (mismo dual-lookup que
+      // createVoucherCheckout) para obtener:
+      //   · bonusValidityDays  → caducidad en DÍAS desde la emisión. Si > 0
+      //     manda; si vacío/0 cae al voucherValidityMonths global (meses).
+      //   · bonusUseIntervalDays → días mínimos entre usos. Se CONGELA en el
+      //     bono (snapshot). 0/vacío = LIBRE. El canje en Recepción PRO lee
+      //     este campo del bono, no del servicio.
+      let servicioBono = null;
+      if (registro.serviceSetupUid) {
+        try {
+          const svcRes = await wixData.query(CMS_CATALOG)
+            .eq('setupUid', registro.serviceSetupUid)
+            .limit(1)
+            .find({ suppressAuth: true });
+          servicioBono = (svcRes.items || [])[0] || null;
+          if (!servicioBono) {
+            servicioBono = await wixData.get(CMS_CATALOG, registro.serviceSetupUid, { suppressAuth: true });
+          }
+        } catch (_) { servicioBono = null; }
+      }
+      const validityDays = (servicioBono && typeof servicioBono.bonusValidityDays === 'number' && servicioBono.bonusValidityDays > 0)
+        ? Math.floor(servicioBono.bonusValidityDays)
+        : 0;
+      const intervalDays = (servicioBono && typeof servicioBono.bonusUseIntervalDays === 'number' && servicioBono.bonusUseIntervalDays > 0)
+        ? Math.floor(servicioBono.bonusUseIntervalDays)
+        : 0;
+
       const cfgResult = await wixData.query(CMS_CONFIG).limit(1).find({ suppressAuth: true });
       const validityMonths = (cfgResult.items.length > 0 && typeof cfgResult.items[0].voucherValidityMonths === 'number')
         ? cfgResult.items[0].voucherValidityMonths
@@ -919,8 +1080,13 @@ export const confirmVoucherPayment = webMethod(
       const now = new Date();
       registro.status = 'ACTIVO';
       registro.issueDate = now;
-      registro.expirationDate = calcularExpirationDate(now, validityMonths);
+      registro.expirationDate = (validityDays > 0)
+        ? calcularExpirationDateDias(now, validityDays)
+        : calcularExpirationDate(now, validityMonths);
+      registro.bonusUseIntervalDays = intervalDays;   // snapshot congelado (0 = LIBRE)
       registro.paymentMethod = 'Wix Pay';
+
+      console.log(`${TAG} 📆 Bono ${registro.code}: caducidad=${validityDays > 0 ? validityDays + 'd (servicio)' : validityMonths + 'm (global)'} · intervalo=${intervalDays > 0 ? intervalDays + 'd' : 'LIBRE'}`);
 
       const updated = await wixData.update(CMS_VOUCHERS, registro, { suppressAuth: true });
       console.log(`${TAG} ✅ Voucher ACTIVO: ${updated._id} | vence=${updated.expirationDate.toISOString()}`);

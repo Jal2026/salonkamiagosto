@@ -1,10 +1,53 @@
 // =====================================================
 // KAMISUITE - Page Code Ficha Cliente CRM
 // =====================================================
-// VERSION: 1.9.1
-// FECHA: 1 de julio de 2026
+// VERSION: 1.9.3
+// FECHA: 6 de julio de 2026
 //
 // CHANGELOG:
+// v1.9.3 (06-Jul-2026) — HOTFIX case 'crearContacto':
+//   - Se retira la llamada a cargarDatosCliente(r.contactId) después
+//     de 'contactoCreado'. Motivo: el widget desktop v1.7.4 / mobile
+//     v1.1.2 delega la apertura del recién creado en su función
+//     seleccionarCliente(id, nombreCompleto), que además de disparar
+//     'clienteSeleccionado' (que ya ejecuta cargarDatosCliente en este
+//     mismo pagecode), pone state.contactId = id — clave del fix.
+//     Sin ese reset del state.contactId en el widget, los botones de
+//     editar sexo, fecha de nacimiento, notas, etc. no funcionaban
+//     hasta refrescar la página.
+//     Si el pagecode dejase su cargarDatosCliente Y el widget dispara
+//     clienteSeleccionado, se producirían DOS llamadas al backend
+//     (getFichaCliente + care* duplicados). Por eso el pagecode ya
+//     no la lanza — la delega en el flujo probado del widget.
+//   - Renombrado 'DUPLICATE_EMAIL' → 'DUPLICATE_PHONE' (paridad con
+//     backend v1.9.11; Wix bloquea email duplicado en createContact,
+//     así que la rama antigua nunca se activaba).
+//   - Renombrado envío 'contactoDuplicadoEmail' → 'contactoDuplicadoTelefono'.
+//   - Los mensajes a la UI ya NO reenvían textos de error crudos del
+//     backend (backend v1.9.11 devuelve error.code sin error.message).
+//     Cualquier otro fallo se traduce a 'contactoError' — un aviso
+//     dentro del modal de alta con texto fijo en español (widget), en
+//     lugar de 'fichaError' que sacaba toast a pantalla.
+//   - Sin cambios en el resto del switch, imports ni helpers.
+//
+// v1.9.2 (06-Jul-2026) — Alta de contactos desde el CRM
+//   - NEW: case 'crearContacto' → crearContactoCRM (nuevo webMethod
+//     del backend v1.9.10). Payload {nombre, apellido, telefono, email,
+//     fechaNacimiento?, sexo?, allowDuplicates?}. En éxito:
+//       1) push del cliente al cache (cachedClientes) para que aparezca
+//          inmediatamente en las búsquedas locales.
+//       2) sendToWidget('contactoCreado', {contactId, cliente}) —
+//          el widget cierra el modal y muestra toast.
+//       3) cargarDatosCliente(contactId) — abre automáticamente la
+//          ficha del recién creado, mismo flujo que 'clienteSeleccionado'.
+//     En duplicado (DUPLICATE_EMAIL): sendToWidget('contactoDuplicadoEmail',
+//     {message}). El widget muestra aviso al operador y reintenta con
+//     allowDuplicates=true si el usuario confirma.
+//     En error genérico: sendToWidget('fichaError', {message}).
+//   - Import ampliado: se añade `crearContactoCRM` al import existente
+//     de backend/fichaClienteLogic.web (misma línea).
+//   - Sin cambios en el resto del switch, imports ni helpers.
+//
 // v1.9.1 (01-Jul-2026) — Fecha de nacimiento (campo nativo Wix)
 //   - NEW: case 'guardarFechaNacimiento' → actualizarContactoCRM
 //     con { contactId, fechaNacimiento }. El backend v1.9.8 la
@@ -74,7 +117,8 @@ import {
   actualizarFotoCliente,
   sincronizarClientProfile,
   enviarMensajeInbox,
-  getProximasCitasCliente
+  getProximasCitasCliente,
+  crearContactoCRM  // v1.9.2
 } from 'backend/fichaClienteLogic.web';
 
 import { cargarTodosContactos } from 'backend/recepcionLogic.web';
@@ -101,7 +145,7 @@ import {
   eliminarCupon
 } from 'backend/couponsLogic.web';
 
-const TAG = '[FichaCliente][PageCode][1.9.1]';
+const TAG = '[FichaCliente][PageCode][1.9.3]';
 
 let cachedClientes = [];
 let widgetReady    = false;
@@ -218,6 +262,39 @@ async function handleMessage(event) {
         }
       } catch (e) {
         sendToWidget('fichaError', { message: e.message });
+      }
+      break;
+
+    // v1.9.3 — Alta de nuevo contacto desde el CRM.
+    // Payload: {nombre, apellido, telefono, email, fechaNacimiento?,
+    //           sexo?, allowDuplicates?}
+    // Cambios v1.9.3 respecto a v1.9.2:
+    //   · Ya NO se llama cargarDatosCliente(r.contactId) aquí. El
+    //     widget invoca su propia seleccionarCliente(id, nombre) al
+    //     recibir 'contactoCreado', lo que dispara 'clienteSeleccionado'
+    //     y llega aquí abajo (case 'clienteSeleccionado'). De ahí que
+    //     lanzar cargarDatosCliente aquí duplicaría la carga.
+    //   · DUPLICATE_EMAIL → DUPLICATE_PHONE (paridad backend v1.9.11).
+    //   · Ningún error.message del backend viaja al widget. Se traduce
+    //     a 'contactoDuplicadoTelefono' o 'contactoError' — el widget
+    //     usa siempre su propio texto fijo en español.
+    case 'crearContacto':
+      try {
+        const r = await crearContactoCRM(data);
+        if (r?.ok) {
+          if (r.cliente) cachedClientes.push(r.cliente);
+          sendToWidget('contactoCreado', {
+            contactId: r.contactId,
+            cliente: r.cliente
+          });
+        } else if (r?.error?.code === 'DUPLICATE_PHONE') {
+          sendToWidget('contactoDuplicadoTelefono', {});
+        } else {
+          sendToWidget('contactoError', {});
+        }
+      } catch (e) {
+        console.error(`${TAG} crearContacto excepción:`, e && e.message);
+        sendToWidget('contactoError', {});
       }
       break;
 

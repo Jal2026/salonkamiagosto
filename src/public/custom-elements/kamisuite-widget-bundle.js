@@ -3,8 +3,163 @@
  * BUNDLE para Wix Custom Element (todo-en-uno)
  * =====================================================================
  * Tag name:  kami-reserva
- * VERSION:   2.0.13 (bundle)
- * FECHA:     19 de junio de 2026
+ * VERSION:   2.0.18 (bundle)
+ * FECHA:     3 de agosto de 2026
+ *
+ * v2.0.18 — DESTACAR el bloque "Profesional para los complementos".
+ *   Solo estética, cero cambios funcionales sobre v2.0.17.
+ *   El bloque se pintaba suelto, al mismo nivel visual que los
+ *   complementos de arriba, y pasaba desapercibido.
+ *   · Nuevo contenedor `.kr-extrapro`: perímetro de 1px, fondo de acento y
+ *     radio grande, envolviendo título + switch + chips.
+ *   · Título en negrita (`.kr-extrapro__title`, --kr-w-bold).
+ *   · La fila del switch pasa a fondo liso (--kr-surface) para contrastar
+ *     sobre el acento.
+ *   · Usa EXCLUSIVAMENTE tokens ya declarados en :host
+ *     (--kr-accent-soft, --kr-accent-line, --kr-radius-lg, --kr-w-bold,
+ *     --kr-surface, --kr-line, --kr-ink), así que respeta la piel de cada
+ *     salón: ni un color fijo.
+ *
+ * v2.0.17 — SEGUNDO PROFESIONAL PARA LOS COMPLEMENTOS (recuperado de V1).
+ *   Backend pareja: widgetPublicoLogic v0.9.0. Motor final:
+ *   Page code: Servicios (Item) v0.3.5. El motor de packs
+ *   (recepcionProLogic) NO se toca: el reparto de fases lo aplica el
+ *   propio backend del widget público tras crear la reserva.
+ *
+ *   La UI de este bloque llevaba en el bundle desde el principio
+ *   (state.proExtra, state.sameExtra, _renderProExtra, fila "Compl. con"
+ *   del resumen y de la confirmación) pero NUNCA se veía, porque el
+ *   backend emitía `requiresExtraPro: false` hardcodeado. Y aunque se
+ *   hubiera visto, el segundo profesional no viajaba en ninguno de los dos
+ *   emits. Esta versión cierra el lazo:
+ *
+ *   · _hayComplementosElegidos() — nuevo. El bloque solo se pinta si el
+ *     servicio tiene complementos (requiresExtraPro del backend) Y el
+ *     cliente ha MARCADO al menos uno. Sin complemento marcado no hay nada
+ *     que repartir.
+ *   · _renderProExtra ahora es defensivo con proExtraField null (el Paso 2
+ *     puede no existir) y, al ocultarse, normaliza el estado a "mismo
+ *     profesional" para no dejar un segundo profesional fantasma.
+ *   · _afterCompChange repinta el bloque: aparece al marcar el primer
+ *     complemento y desaparece al quedarse sin ninguno.
+ *   · Cambiar el switch o el chip del segundo profesional AHORA vuelve a
+ *     pedir huecos (this.state.hour = null + _recompute(true)), igual que
+ *     hace _renderProMain desde v2.0.9: la disponibilidad depende de los
+ *     dos profesionales, y la hora elegida puede dejar de ser válida.
+ *   · _renderProMain repinta también el bloque del segundo.
+ *   · _proExtraEnvio() — nuevo. Devuelve "" salvo que haya reparto real
+ *     (bloque visible + switch en "otro" + id concreto ≠ principal ≠ 'any').
+ *   · 'pedir-huecos' añade `proExtraId` y `principalSetupUid` (el backend
+ *     necesita el mapeoFases del servicio para calcular el punto de corte).
+ *   · 'reservar' añade `staffExtraId`.
+ *
+ *   Con proExtraId/staffExtraId vacíos, TODO el comportamiento es idéntico
+ *   a v2.0.16. Cero cambios de estética, de flujo, de gating, de variantes
+ *   o de resumen.
+ *
+ * v2.0.16 — durationMin (duración total) en el payload de reserva.
+ *   El payload del evento 'reservar' incluye ahora durationMin =
+ *   this._calc().duration (principal + variante + complementos), que es
+ *   la MISMA cifra que _emitirPedirHuecos ya envía a getHuecosDisponibles.
+ *   El backend la usa para resolver 'Cualquiera' comprobando que el
+ *   profesional esté libre en TODO el bloque continuo que el motor de
+ *   huecos ya validó (máxima seguridad). Única línea añadida al payload;
+ *   se conserva varianteSel y todo lo demás intacto. Cero cambios en
+ *   render, complementos, variantes, flujo, estética, gating o resumen.
+ *
+ * v2.0.15 — VARIANTE del servicio PRINCIPAL (Corte Mujer M/L/XL, etc.).
+ *   Backend pareja: widgetPublicoLogic v0.7.7. Motor final:
+ *   recepcionProLogic v1.0.36 (crearPackReserva v1.0.25 desde 19 Jun).
+ *
+ *   Bug preexistente: el bundle NUNCA renderizó selector de variantes
+ *   del servicio principal aunque el backend público las emitía en el
+ *   shape (adaptarServicio v0.7.2+: hasVariants, variantes[]). Los
+ *   servicios simple_variantes (Corte Mujer M/L/XL, Corte Niño S/M/L)
+ *   se reservaban SIEMPRE con precio/duración base, sin opción para
+ *   que el cliente eligiera tamaño. Además, crearReservaPublica
+ *   tampoco propagaba varianteSel a crearPackReserva → si por milagro
+ *   el widget lo enviara, se perdía en el motor público. Doble gap.
+ *
+ *   Fix del bundle (esta v2.0.15) + motor público (widgetPublicoLogic
+ *   v0.7.7) cierran el lazo. Paridad con Lite Mobile v0.5.0 y
+ *   Recepción PRO Desktop v1.1.43.
+ *
+ *   · state incluye ahora `variantIdx` en _initState. Valor -1 = BASE
+ *     (svc.basePrice + svc.baseDuration del catálogo, actúa como "M").
+ *     Valores 0..N = índice en svc.variantes[i].
+ *   · _calc: si variantIdx >= 0, SUSTITUYE (no suma) precio y duración
+ *     base por los de la variante elegida. Coherente con
+ *     crearPackReserva v1.0.25 que hace exactamente lo mismo en backend.
+ *   · _build: la sección Paso 2 se monta ahora si hay complementos O
+ *     variantes del principal. Antes solo si había complementos → los
+ *     simple_variantes sin complementos nunca llegaban a mostrar
+ *     selector. hasPaso2 = hasComps || hasPrincipalVariants. Labels de
+ *     Paso 3/4 se recalculan igual.
+ *   · _renderComplements: al inicio del Paso 2, ANTES de los
+ *     complementos, se pinta el bloque "Elige la variante del servicio"
+ *     con CHIPS usando el patrón REAL del bundle (`kr-chips` +
+ *     `kr-chip` + `kr-chip.is-sel` + `kr-chip__lab` + `kr-chip__sub`,
+ *     verificados en el CSS interno del bundle líneas 448-459, mismo
+ *     patrón que la línea 2234 del propio bundle). Primera opción =
+ *     BASE (svc.name + basePrice + baseDuration). Siguientes =
+ *     svc.variantes[i]. Cada chip muestra label + precio ("incluido"
+ *     si 0€) + duración. Al clicar, state.variantIdx cambia y
+ *     _recompute recalcula precio/duración visible al momento. Cero
+ *     clases CSS nuevas: reutiliza las existentes del bundle sin
+ *     tocar la estética.
+ *   · _submit: payload incluye ahora varianteSel {idx, label, price,
+ *     duration} si el cliente eligió variante ≠ base. Si eligió base
+ *     o el servicio no tiene variantes, varianteSel = null. El motor
+ *     público v0.7.7 lo propaga a crearPackReserva sin transformarlo.
+ *
+ *   Cero cambios en: renderizado del grid de servicios, cabecera del
+ *   servicio (basePrice sigue siendo lo que se pinta en la card del
+ *   grid = "desde X€"), complementos (bool/choice/exclusive intactos),
+ *   flujo de días/horas, sección de datos del cliente, consentimientos
+ *   legales, descuento promocional (sigue aplicándose sobre basePrice —
+ *   ver nota abajo), gating de RESERVAR, resumen. Cero clases CSS
+ *   nuevas.
+ *
+ *   Nota sobre el descuento promocional (v2.0.10): `promoPct` sigue
+ *   aplicándose SOLO sobre basePrice. Si el cliente elige variante
+ *   ≠ base, el descuento NO se aplica a la variante (comportamiento
+ *   idéntico al 100% con Recepción Pro V2). Este es un caso raro (los
+ *   servicios simple_variantes rara vez llevan promo), pero se
+ *   documenta explícitamente.
+ *
+ * v2.0.14 — GRUPO EXCLUSIVO + PANELES EXPANDIBLES.
+ *   Backend pareja: widgetPublicoLogic v0.7.5.
+ *
+ *   · _renderComplements ahora reconoce c.type === 'exclusive'.
+ *     Se renderiza como panel PLEGABLE por defecto: un header
+ *     clicable con el label del grupo ("Tratamiento", "Peinado"…)
+ *     y, al abrirse, una lista de opciones tipo radio (una única
+ *     seleccionable) más "No añadir" como primera opción.
+ *     Reutiliza .kr-chips + .kr-chip para máxima coherencia con el
+ *     patrón existente de choice; añade un contenedor colapsable
+ *     .kr-expand con header .kr-expand__head y cuerpo .kr-expand__body.
+ *
+ *   · UX secundaria: los complementos type:'choice' con variantes
+ *     (Peinado M/L/XL) también se muestran plegados por defecto.
+ *     Al desplegarse aparecen las variantes con precio/duración.
+ *     Igual criterio: opcional siempre visible como panel expandible
+ *     para reducir densidad vertical.
+ *
+ *   · _submit: exclusive envía la opción elegida como objeto
+ *     { uid, varianteId, varianteLabel, price, duration } donde uid
+ *     es el setupUid del servicio elegido (no el id del grupo). El
+ *     backend recepcionProLogic v1.0.34 lo materializa en la posición
+ *     del chip rojo (rama tipo:'exclusivo' del mapeoFases). Si el
+ *     estado es 'none' (o inexistente), no se envía nada.
+ *
+ *   · _calc: suma correctamente price y duration de la opción elegida
+ *     en exclusive (reutiliza el mismo camino que choice).
+ *
+ *   · _complementosObligatoriosOk sigue igual: exclusive es siempre
+ *     opcional (required:false por diseño), no bloquea el botón.
+ *
+ *   · Cero cambios en: legales, gating de datos, casillas, pago online,
+ *     rail lateral, resumen, cabecera, skins.
  *
  * v2.0.13 — Complementos con VARIANTES y OBLIGATORIOS.
  *   · El backend (widgetPublicoLogic v0.7.2) ya emite los complementos con
@@ -372,6 +527,36 @@ window.KR_STYLES = `
   background-repeat: no-repeat; background-position: center; box-shadow: 0 0 0 2px var(--kr-bg);
 }
 
+/* ---- expand (v2.0.14) — panel plegable para exclusive / choice ----- */
+.kr-expand {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--kr-line); border-radius: var(--kr-radius);
+  background: var(--kr-surface); overflow: hidden;
+  transition: border-color var(--kr-dur) var(--kr-ease);
+}
+.kr-expand.is-open { border-color: var(--kr-line-2); }
+.kr-expand.has-selection { border-color: var(--kr-accent); background: var(--kr-accent-soft); }
+.kr-expand__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 14px 18px; cursor: pointer; user-select: none;
+  font-family: inherit; text-align: left; background: transparent; border: 0;
+  color: var(--kr-ink); width: 100%;
+}
+.kr-expand__title { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.kr-expand__lab { font-size: var(--kr-fs-sm); font-weight: var(--kr-w-semi); line-height: 1.2; }
+.kr-expand__sub { font-size: var(--kr-fs-xs); color: var(--kr-ink-3); line-height: 1.2; }
+.kr-expand.has-selection .kr-expand__sub { color: var(--kr-accent-2); font-weight: var(--kr-w-medium); }
+.kr-expand__arrow {
+  flex-shrink: 0; width: 14px; height: 14px; color: var(--kr-ink-3);
+  transition: transform var(--kr-dur) var(--kr-ease);
+}
+.kr-expand.is-open .kr-expand__arrow { transform: rotate(180deg); color: var(--kr-ink); }
+.kr-expand__body {
+  padding: 0 18px 16px 18px; display: none; flex-direction: column; gap: 10px;
+  border-top: 1px solid var(--kr-line);
+}
+.kr-expand.is-open .kr-expand__body { display: flex; padding-top: 14px; }
+
 /* ---- switch row (mismo profesional) --------------------------------- */
 .kr-switchrow {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -393,6 +578,27 @@ window.KR_STYLES = `
 .kr-switch:checked { background: var(--kr-accent); }
 .kr-switch:checked::after { transform: translateX(19px); }
 .kr-subselect { margin-top: 4px; }
+
+/* ---- bloque destacado: profesional para los complementos ------------- */
+/* v2.0.18 — Perímetro + fondo de acento para que no se confunda con los
+   complementos de arriba. Usa SOLO tokens ya declarados en :host, así que
+   respeta la piel (skin) de cada salón sin color fijo alguno. */
+.kr-extrapro {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 16px 18px;
+  border-radius: var(--kr-radius-lg);
+  border: 1px solid var(--kr-accent-line);
+  background: var(--kr-accent-soft);
+}
+.kr-extrapro__title {
+  font-size: var(--kr-fs-sm);
+  font-weight: var(--kr-w-bold);
+  color: var(--kr-ink);
+  letter-spacing: -.005em;
+}
+/* La fila del switch pasa a fondo liso para contrastar sobre el acento */
+.kr-extrapro .kr-switchrow { background: var(--kr-surface); border-color: var(--kr-line); }
+.kr-extrapro .kr-subselect { margin-top: 2px; }
 
 /* ---- hours grid ------------------------------------------------------ */
 .kr-hours-head {
@@ -744,9 +950,15 @@ window.KR_applySkin = function (el, name) {
 /* ============================================================================
    kr-widget.js — <kami-reserva> Custom Element (Shadow DOM)
    ----------------------------------------------------------------------------
-   VERSION: 2.0.13
-   FECHA:   14 de junio de 2026
+   VERSION: 2.0.16
+   FECHA:   5 de julio de 2026
 
+   v2.0.16 — durationMin (duración total) en el payload de reserva, para
+             que el backend resuelva 'Cualquiera' comprobando el bloque
+             continuo completo.
+   v2.0.15 — Variante del servicio PRINCIPAL (M/L/XL) con BASE del catálogo.
+   v2.0.14 — Grupo exclusivo + paneles expandibles.
+   v2.0.13 — Complementos con VARIANTES y OBLIGATORIOS.
    v2.0.11 — Fix desbordamiento panel promo + sticky de tarjeta lateral.
    v2.0.10 — Descuento promocional visible en resumen + cálculo solo base.
    v2.0.9 — Fix race UI al cambiar de profesional.
@@ -1330,7 +1542,20 @@ window.KR_applySkin = function (el, name) {
         submitError: '',
         // v2.0.12 — consentimientos legales (marcados por defecto)
         aceptaPrivacidad: true,
-        aceptaTerminos: true
+        aceptaTerminos: true,
+        // v2.0.15 — variante del servicio PRINCIPAL.
+        //   -1 = BASE (svc.basePrice + svc.baseDuration del catálogo).
+        //        Es lo que actúa como "M" en Corte Mujer M/L/XL. Al
+        //        enviar la reserva NO se manda varianteSel — el motor
+        //        crearReservaPublica v0.7.7 delega en crearPackReserva
+        //        con precio/duración base como siempre.
+        //    0..N = índice en svc.variantes[]. Se envía varianteSel
+        //           {idx, label, price, duration} al motor; se aplica
+        //           al precio/duración de la reserva.
+        //   Servicios sin variantes ignoran este campo (no se pinta el
+        //   selector). Paridad con Lite Mobile v0.5.0 y Recepción PRO
+        //   Desktop v1.1.43.
+        variantIdx: -1
       };
       this._build();
       this._applyPrefill();
@@ -1448,6 +1673,14 @@ window.KR_applySkin = function (el, name) {
           fecha: day.id,
           proId: this.state.proMain,
           durationMin: calc.duration,
+          // v2.0.17 — Segundo profesional para los complementos. Cuando va
+          // informado, el backend (widgetPublicoLogic v0.9.0) parte la cita
+          // en dos tramos y valida cada uno contra su profesional. Vacío →
+          // motor mono-profesional, idéntico a v2.0.16.
+          // `principalSetupUid` es necesario para que el backend calcule el
+          // punto de corte a partir del mapeoFases del servicio.
+          proExtraId: this._proExtraEnvio(),
+          principalSetupUid: (this._service && this._service.setupUid) || "",
           // v2.0.8 — Restringe candidatos cuando proId='any' a los
           // profesionales permitidos para este servicio (idStaff).
           idStaffPermitidos: Array.isArray(this._service.idStaff) ? this._service.idStaff : []
@@ -1584,6 +1817,32 @@ window.KR_applySkin = function (el, name) {
       let price = 0, dur = cfg.baseDuration;
       let tbd = (cfg.basePrice == null);
       if (cfg.basePrice != null) price += cfg.basePrice;
+
+      // v2.0.15 — VARIANTE del principal (Corte Mujer M/L/XL). Si el
+      // cliente eligió una variante ≠ base, se sustituye el precio y la
+      // duración base por los de la variante elegida (no se suma, se
+      // reemplaza). Coherente con crearPackReserva v1.0.25 del motor,
+      // que aplica varianteSel sobre la copia del principal.
+      // Si el cliente eligió BASE (variantIdx === -1) o el servicio no
+      // tiene variantes, se conserva price/dur = base (comportamiento
+      // v2.0.14 idéntico).
+      if (cfg.hasVariants && Array.isArray(cfg.variantes) && this.state && Number.isInteger(this.state.variantIdx) && this.state.variantIdx >= 0 && this.state.variantIdx < cfg.variantes.length) {
+        const v = cfg.variantes[this.state.variantIdx];
+        if (v && typeof v === 'object') {
+          const vPriceRaw = (v.precio != null ? v.precio : v.price);
+          const vDurRaw = (v.duracion != null ? v.duracion : v.duration);
+          const vPrice = (vPriceRaw != null) ? Number(vPriceRaw) : NaN;
+          const vDur = (vDurRaw != null) ? Number(vDurRaw) : NaN;
+          if (!isNaN(vPrice)) {
+            price = vPrice;                 // sustituye base
+            tbd = false;
+          }
+          if (!isNaN(vDur) && vDur > 0) {
+            dur = vDur;                     // sustituye base
+          }
+        }
+      }
+
       cfg.complements && cfg.complements.forEach(c => {
         const v = this.state.comp[c.id];
         if (c.type === "bool") {
@@ -1640,11 +1899,16 @@ window.KR_applySkin = function (el, name) {
       this.body.appendChild(shell);
 
       // v2.0 — Numeración dinámica de pasos según si hay o no complementos
+      // v2.0.15 — También se cuenta el Paso 2 si el servicio tiene
+      // variantes del principal (Corte Mujer M/L/XL) aunque no tenga
+      // complementos: el bloque "Variante" se pinta ahí también.
       const hasComps = !!(cfg.complements && cfg.complements.length);
+      const hasPrincipalVariants = !!(cfg.hasVariants && Array.isArray(cfg.variantes) && cfg.variantes.length);
+      const hasPaso2 = hasComps || hasPrincipalVariants;
       const lblP1 = "Paso 1";
-      const lblP2 = hasComps ? "Paso 2" : null;
-      const lblPHora = hasComps ? "Paso 3" : "Paso 2";
-      const lblPDatos = hasComps ? "Paso 4" : "Paso 3";
+      const lblP2 = hasPaso2 ? "Paso 2" : null;
+      const lblPHora = hasPaso2 ? "Paso 3" : "Paso 2";
+      const lblPDatos = hasPaso2 ? "Paso 4" : "Paso 3";
 
       /* ---- Paso 1 · Día y profesional ---- */
       const aSec = this._section(lblP1, "¿Cuándo y con quién?",
@@ -1680,10 +1944,12 @@ window.KR_applySkin = function (el, name) {
       aSec.append(dayField, proField);
       this.flow.appendChild(aSec);
 
-      /* ---- Paso 2 · Complementos (omitir si el servicio no los declara) ---- */
-      // v2.0: si no hay complementos, NO se monta la sección — los pasos
-      // se renuncian automáticamente con los labels calculados arriba.
-      if (hasComps) {
+      /* ---- Paso 2 · Personaliza (variante del principal y/o complementos) ---- */
+      // v2.0.15: sección visible si hay variante del principal O
+      // complementos. Antes solo si había complementos → los servicios
+      // simple_variantes sin complementos no llegaban a mostrar el
+      // selector de variante.
+      if (hasPaso2) {
         this.compsSec = this._section(lblP2, "Personaliza tu servicio",
           "Añade lo que necesites: el precio y la duración se recalculan al momento.", "complementos");
         this.compsBox = el("div", "kr-field");
@@ -1734,9 +2000,12 @@ window.KR_applySkin = function (el, name) {
       this._applyServiceShape();
       this._renderDays();
       this._renderProMain();
-      if (hasComps) {
+      // v2.0.15 — Si hay variante del principal (aunque no haya complementos)
+      // también hay que renderizar el bloque, que ahora vive dentro del
+      // Paso 2 antes de los complementos.
+      if (hasComps || hasPrincipalVariants) {
         this._renderComplements();
-        this._renderProExtra();
+        if (hasComps) this._renderProExtra();
       }
       this._renderActions();
       this._renderSummary();
@@ -1888,6 +2157,10 @@ window.KR_applySkin = function (el, name) {
         this.state.hour = null;
         this._renderProMain();
         if (this.state.sameExtra) this.state.proExtra = id;
+        // v2.0.17 — repintar los chips del segundo profesional: el
+        // principal ya no debe salir seleccionable como "otro", y si el
+        // switch está en "el mismo" hay que reflejar el cambio.
+        this._renderProExtra();
         this._recompute(true);
         this._renderActions();
         this._renderSummary();
@@ -1896,17 +2169,157 @@ window.KR_applySkin = function (el, name) {
 
     /* ---- complements (generic) ---- */
     _renderComplements() {
+      if (!this.compsBox) return;   // v2.0.15 defensivo: paso 2 no existe
       this.compsBox.innerHTML = "";
+      // v2.0.14 — Estado de plegado por complemento (sobrevive re-renders
+      // porque this.state.expand persiste en la instancia).
+      if (!this.state.expand) this.state.expand = {};
+
+      // v2.0.15 — VARIANTE DEL PRINCIPAL (Corte Mujer M/L/XL). Bloque
+      // propio al inicio del Paso 2, ANTES de los complementos. Se pinta
+      // como chips horizontales: primero la BASE (svc.name + basePrice +
+      // baseDuration del catálogo, actúa como "M"), luego una opción por
+      // cada svc.variantes[i]. El cliente ve claramente el impacto de
+      // elegir L o XL sobre precio/duración.
+      //
+      // v2.0.15.1 — Correción CSS crítica: usa las clases REALES del
+      // propio bundle (`kr-chips` / `kr-chip` / `kr-chip.is-sel` /
+      // `kr-chip__lab` / `kr-chip__sub` — verificadas en el CSS interno
+      // del bundle, líneas 448-459). Antes se usaban `kr-choice` /
+      // `kr-choice__btn` / `is-active` que NO existen en el CSS del
+      // bundle → los chips salían con estilo de `<button>` HTML por
+      // defecto (borde negro fino, sin color de selección). Mismo
+      // patrón que la línea 2234 del propio bundle (kr-chips dentro
+      // de un panel expandido).
+      const cfgV = this._service;
+      const tieneVarPrincipal = !!(cfgV.hasVariants && Array.isArray(cfgV.variantes) && cfgV.variantes.length);
+      if (tieneVarPrincipal) {
+        const vField = el("div", "kr-field");
+        vField.appendChild(el("label", "kr-label", "Elige la variante del servicio"));
+        const wrap = el("div", "kr-chips");
+
+        const makeVarChip = (idx, label, priceRaw, durRaw) => {
+          const isSel = this.state.variantIdx === idx;
+          const chip = el("button", "kr-chip" + (isSel ? " is-sel" : ""));
+          chip.type = "button";
+          const price = (priceRaw != null) ? Number(priceRaw) : NaN;
+          const dur = (durRaw != null) ? Number(durRaw) : NaN;
+          const meta = [];
+          if (!isNaN(price)) {
+            meta.push(price > 0 ? EUR(price) : 'incluido');
+          }
+          if (!isNaN(dur) && dur > 0) meta.push(durTxt(dur));
+          const subHtml = meta.length ? `<span class="kr-chip__sub">${meta.join(' · ')}</span>` : '';
+          chip.innerHTML = `<span class="kr-chip__lab">${label}</span>${subHtml}`;
+          chip.addEventListener("click", () => {
+            if (this.state.variantIdx === idx) return;
+            this.state.variantIdx = idx;
+            this._renderComplements();
+            this._recompute(true);
+            this._renderActions();
+            this._renderSummary();
+          });
+          return chip;
+        };
+
+        // Opción BASE (idx = -1). Actúa como "M" del catálogo.
+        wrap.appendChild(makeVarChip(
+          -1,
+          cfgV.name || 'Base',
+          cfgV.basePrice,
+          cfgV.baseDuration
+        ));
+        // Opciones del array svc.variantes
+        cfgV.variantes.forEach((v, i) => {
+          const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || ('Variante ' + (i + 1)));
+          const vPrice = (typeof v === 'object') ? (v.precio != null ? v.precio : v.price) : null;
+          const vDur = (typeof v === 'object') ? (v.duracion != null ? v.duracion : v.duration) : null;
+          wrap.appendChild(makeVarChip(i, vLabel, vPrice, vDur));
+        });
+        vField.appendChild(wrap);
+        this.compsBox.appendChild(vField);
+      }
+
       this._service.complements.forEach(c => {
         const field = el("div", "kr-field");
-        const lab = el("label", "kr-label", c.label
-          + (c.type === "bool" && c.price ? ` <small>· +${EUR(c.price)}</small>` : "")
-          + (c.hint ? ` <small>· ${c.hint}</small>` : ""));
-        field.appendChild(lab);
-        if (c.type === "bool") field.appendChild(this._boolControl(c));
-        else field.appendChild(this._choiceControl(c));
+        // BOOL: sigue con label + segmento Sí/No como hasta v2.0.13.
+        if (c.type === "bool") {
+          const lab = el("label", "kr-label", c.label
+            + (c.price ? ` <small>· +${EUR(c.price)}</small>` : "")
+            + (c.hint ? ` <small>· ${c.hint}</small>` : ""));
+          field.appendChild(lab);
+          field.appendChild(this._boolControl(c));
+        } else if (c.type === "choice" || c.type === "exclusive") {
+          // v2.0.14 — CHOICE (variantes M/L/XL de un servicio) y EXCLUSIVE
+          // (grupo con varios servicios distintos, elige uno) se pintan
+          // ambos como PANEL PLEGABLE. Reduce densidad vertical y agrupa
+          // visualmente las opciones bajo un título con estado actual.
+          field.appendChild(this._expandControl(c));
+        } else {
+          // Fallback defensivo para types desconocidos.
+          const lab = el("label", "kr-label", c.label);
+          field.appendChild(lab);
+          field.appendChild(this._choiceControl(c));
+        }
         this.compsBox.appendChild(field);
       });
+    }
+
+    // v2.0.14 — Devuelve el label de la opción elegida (o null si es
+    // 'none' / no hay elección aún).
+    _selectedOptionLabel(c) {
+      const v = this.state.comp[c.id];
+      if (!v || v === 'none') return null;
+      const o = (c.options || []).find(o => o.id === v);
+      if (!o) return null;
+      const priceTxt = (o.price == null)
+        ? " · a valorar"
+        : (o.price > 0 ? ` · +${EUR(o.price)}` : "");
+      return (o.label || "") + priceTxt;
+    }
+
+    // v2.0.14 — Panel plegable que envuelve choice o exclusive.
+    // Estado abierto/cerrado en this.state.expand[c.id]. Cerrado por defecto.
+    // Se abre automáticamente si el complemento es required y no hay elección
+    // aún (para que el gating de RESERVAR sea visible al usuario).
+    _expandControl(c) {
+      const wrap = el("div", "kr-expand");
+      const isOpen = !!this.state.expand[c.id]
+        || (c.required && (!this.state.comp[c.id] || this.state.comp[c.id] === 'none'));
+      const sel = this._selectedOptionLabel(c);
+      if (isOpen) wrap.classList.add("is-open");
+      if (sel) wrap.classList.add("has-selection");
+
+      const head = el("button", "kr-expand__head");
+      head.type = "button";
+      const title = el("div", "kr-expand__title");
+      const labTxt = c.label + (c.required ? " *" : "");
+      title.appendChild(el("span", "kr-expand__lab", labTxt));
+      const subTxt = sel
+        ? sel
+        : (c.type === "exclusive" ? "Elige una opción o mantén sin añadir" : "Elige una opción");
+      title.appendChild(el("span", "kr-expand__sub", subTxt));
+      head.appendChild(title);
+      const arrow = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      arrow.setAttribute("class", "kr-expand__arrow");
+      arrow.setAttribute("viewBox", "0 0 24 24");
+      arrow.setAttribute("fill", "none");
+      arrow.setAttribute("stroke", "currentColor");
+      arrow.setAttribute("stroke-width", "2.5");
+      arrow.setAttribute("stroke-linecap", "round");
+      arrow.setAttribute("stroke-linejoin", "round");
+      arrow.innerHTML = '<polyline points="6 9 12 15 18 9"/>';
+      head.appendChild(arrow);
+      head.addEventListener("click", () => {
+        this.state.expand[c.id] = !isOpen;
+        this._renderComplements();
+      });
+      wrap.appendChild(head);
+
+      const body = el("div", "kr-expand__body");
+      body.appendChild(this._choiceControl(c));
+      wrap.appendChild(body);
+      return wrap;
     }
     _boolControl(c) {
       const seg = el("div", "kr-seg");
@@ -1934,17 +2347,62 @@ window.KR_applySkin = function (el, name) {
     _afterCompChange() {
       this.state.hour = null;
       this._renderComplements();
+      // v2.0.17 — El bloque "Profesional para los complementos" depende de
+      // que haya complementos MARCADOS, así que se repinta cada vez que el
+      // cliente toca uno (aparece al marcar el primero, desaparece al
+      // quedarse sin ninguno).
+      this._renderProExtra();
       this._recompute(true);
       this._renderActions();
       this._renderSummary();
     }
 
     /* ---- professional for complements ---- */
+    // v2.0.17 — ¿El cliente ha marcado algún complemento?
+    // bool  → valor truthy.
+    // choice→ opción elegida distinta de 'none'. Si aún no ha elegido nada
+    //         (undefined) cuenta como NO marcado: el bloque solo aparece
+    //         cuando hay una elección real que repartir.
+    _hayComplementosElegidos() {
+      const cfg = this._service;
+      if (!cfg || !Array.isArray(cfg.complements) || !this.state || !this.state.comp) return false;
+      return cfg.complements.some(c => {
+        const v = this.state.comp[c.id];
+        if (c.type === "bool") return !!v;
+        const o = (c.options || []).find(op => op.id === v);
+        return !!(o && o.id !== "none");
+      });
+    }
+
     _renderProExtra() {
+      // v2.0.17 — defensivo: el Paso 2 puede no existir (_build deja
+      // proExtraField = null). Necesario porque ahora se llama también
+      // desde _afterCompChange.
+      if (!this.proExtraField) return;
+
       this.proExtraField.innerHTML = "";
-      if (!this._service.requiresExtraPro) { this.proExtraField.hidden = true; return; }
+
+      // v2.0.17 — Doble condición:
+      //   · requiresExtraPro (backend widgetPublicoLogic v0.9.0: el
+      //     servicio TIENE complementos elegibles), y
+      //   · el cliente ha marcado al menos uno (si no, no hay nada que
+      //     repartir y el bloque sería ruido).
+      // Al ocultarse se normaliza el estado a "mismo profesional" para no
+      // dejar un segundo profesional fantasma en el payload.
+      if (!this._service.requiresExtraPro || !this._hayComplementosElegidos()) {
+        this.proExtraField.hidden = true;
+        this.state.sameExtra = true;
+        this.state.proExtra = this.state.proMain;
+        return;
+      }
+
       this.proExtraField.hidden = false;
-      this.proExtraField.appendChild(el("label", "kr-label", "Profesional para los complementos"));
+
+      // v2.0.18 — Todo el bloque va dentro de un contenedor con perímetro y
+      // fondo de acento, y el título en negrita. Antes se pintaba suelto,
+      // al mismo nivel visual que los complementos, y pasaba desapercibido.
+      const box = el("div", "kr-extrapro");
+      box.appendChild(el("label", "kr-label kr-extrapro__title", "Profesional para los complementos"));
       const row = el("div", "kr-switchrow");
       row.innerHTML = `<div class="kr-switchrow__txt">El mismo del servicio principal
         <small>Mantener a una sola persona en toda la cita</small></div>`;
@@ -1952,17 +2410,45 @@ window.KR_applySkin = function (el, name) {
       sw.addEventListener("change", () => {
         this.state.sameExtra = sw.checked;
         if (sw.checked) this.state.proExtra = this.state.proMain;
-        this._renderProExtra(); this._renderSummary();
+        // v2.0.17 — La disponibilidad depende AHORA de los dos
+        // profesionales: al cambiar el reparto hay que volver a pedir
+        // huecos, igual que hace _renderProMain al cambiar el principal.
+        // La hora elegida puede ya no ser válida con el nuevo reparto.
+        this.state.hour = null;
+        this._renderProExtra();
+        this._recompute(true);
+        this._renderActions();
+        this._renderSummary();
       });
       row.appendChild(sw);
-      this.proExtraField.appendChild(row);
+      box.appendChild(row);
       if (!this.state.sameExtra) {
         const sub = el("div", "kr-pros kr-subselect");
-        this.proExtraField.appendChild(sub);
+        box.appendChild(sub);
         this._proChips(sub, this.state.proExtra, id => {
-          this.state.proExtra = id; this._renderProExtra(); this._renderSummary();
+          if (this.state.proExtra === id) return;   // no-op si no cambia
+          this.state.proExtra = id;
+          this.state.hour = null;
+          this._renderProExtra();
+          this._recompute(true);
+          this._renderActions();
+          this._renderSummary();
         });
       }
+      this.proExtraField.appendChild(box);
+    }
+
+    // v2.0.17 — wixResourceId del SEGUNDO profesional a enviar al backend.
+    // Devuelve "" cuando no hay reparto (bloque oculto, switch "el mismo",
+    // wildcard 'Cualquiera', o coincide con el principal) → el backend
+    // toma el camino mono-profesional idéntico al de v2.0.16.
+    _proExtraEnvio() {
+      if (!this._service || !this._service.requiresExtraPro) return "";
+      if (!this._hayComplementosElegidos()) return "";
+      if (!this.state || this.state.sameExtra) return "";
+      const pe = this.state.proExtra;
+      if (!pe || pe === "any" || pe === this.state.proMain) return "";
+      return pe;
     }
 
     /* ---- hours / availability ---- */
@@ -2424,15 +2910,38 @@ window.KR_applySkin = function (el, name) {
         const day = this._dayById(this.state.dayId);
 
         // Complementos seleccionados.
-        //   · bool  → si está activado, se manda su uid (string), como siempre.
-        //   · choice → si la opción elegida NO es 'none', se manda un objeto
-        //     { uid, varianteId, varianteLabel, price, duration } para que el
-        //     backend persista la VARIANTE elegida (precio/duración correctos),
-        //     no el precio base. (v2.0.13)
+        //   · bool     → si está activado, se manda su uid (string), como siempre.
+        //   · choice   → si la opción elegida NO es 'none', se manda un objeto
+        //                { uid, varianteId, varianteLabel, price, duration }
+        //                donde uid = c.id (setupUid del servicio, mismo para
+        //                todas las variantes) y varianteId identifica la
+        //                variante. El backend persiste precio/duración de la
+        //                variante. (v2.0.13)
+        //   · exclusive → v2.0.14. Grupo con varios servicios distintos, elige
+        //                uno o ninguno. Si el elegido NO es 'none', se manda
+        //                un objeto { uid, varianteId, varianteLabel, price,
+        //                duration } donde uid = o.id (setupUid del SERVICIO
+        //                elegido, distinto según opción). Mismo shape que
+        //                choice; el motor recepcionProLogic v1.0.34 detecta
+        //                el uid dentro de f.refs del item exclusivo y
+        //                materializa el servicio en su posición.
         const complementosSetupUid = (cfg.complements || []).reduce((acc, c) => {
           const v = this.state.comp[c.id];
           if (c.type === 'bool') {
             if (v) acc.push(c.id);
+          } else if (c.type === 'exclusive') {
+            if (v && v !== 'none') {
+              const o = (c.options || []).find(o => o.id === v);
+              if (o) {
+                acc.push({
+                  uid: o.id,                  // setupUid del servicio elegido
+                  varianteId: o.id,
+                  varianteLabel: o.label || '',
+                  price: (o.price == null ? null : Number(o.price)),
+                  duration: Number(o.duration) || 0
+                });
+              }
+            }
           } else {
             // choice
             if (v && v !== 'none') {
@@ -2454,6 +2963,28 @@ window.KR_applySkin = function (el, name) {
         // Guardar contact data para usarla al recibir la respuesta
         this._lastContactData = data;
 
+        // v2.0.15 — VARIANTE del principal. Si state.variantIdx >= 0,
+        // se envía varianteSel {idx, label, price, duration} para que
+        // crearReservaPublica v0.7.7 lo propague a crearPackReserva
+        // v1.0.25 y la reserva se cree con el precio/duración de la
+        // variante. Si variantIdx === -1 (base) o el servicio no tiene
+        // variantes, varianteSel = null → motor usa base.
+        let varianteSel = null;
+        if (cfg.hasVariants && Array.isArray(cfg.variantes)) {
+          const idx = this.state.variantIdx;
+          if (Number.isInteger(idx) && idx >= 0 && idx < cfg.variantes.length) {
+            const v = cfg.variantes[idx];
+            if (v && typeof v === 'object') {
+              const vLabel = v.label || v.nombre || '';
+              const vPriceRaw = (v.precio != null ? v.precio : v.price);
+              const vDurRaw = (v.duracion != null ? v.duracion : v.duration);
+              const vPrice = (vPriceRaw != null) ? Number(vPriceRaw) : 0;
+              const vDur = (vDurRaw != null) ? Number(vDurRaw) : 0;
+              varianteSel = { idx, label: vLabel, price: vPrice, duration: vDur };
+            }
+          }
+        }
+
         const payload = {
           fecha: day.id,
           horaHHmm: this.state.hour,
@@ -2461,6 +2992,10 @@ window.KR_applySkin = function (el, name) {
           complementosSetupUid,
           staffId: this.state.proMain,
           staffName: this._proName(this.state.proMain),
+          // v2.0.17 — Segundo profesional para los complementos. Vacío
+          // cuando no hay reparto → crearReservaPublica se comporta como
+          // en v2.0.16 (toda la cita al principal).
+          staffExtraId: this._proExtraEnvio(),
           contactDetails: {
             firstName: data.nombre,
             lastName: data.apellido,
@@ -2469,7 +3004,17 @@ window.KR_applySkin = function (el, name) {
           },
           memberContactId: this._config?.memberInfo?.contactId || '',
           notas: this.state.nota || '',
-          metodoPago: method
+          metodoPago: method,
+          // v2.0.15 — Variante del principal (null si base).
+          varianteSel,
+          // v2.0.16 — Duración TOTAL de la cita (principal + variante +
+          // complementos): la MISMA cifra que _emitirPedirHuecos envía a
+          // getHuecosDisponibles (this._calc().duration). El backend la usa
+          // para resolver 'Cualquiera' comprobando que el profesional esté
+          // libre en TODO el bloque continuo que el motor de huecos ya
+          // validó. Sin esta línea el backend cae a la duración base del
+          // principal (riesgo de solape en cascadas con complementos).
+          durationMin: this._calc().duration
         };
         this._emitirReservar(payload);
         return;

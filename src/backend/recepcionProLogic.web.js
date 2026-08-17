@@ -1,9 +1,368 @@
 // =====================================================
 // KAMISUITE - Backend: Recepción PRO CMS-first
 // =====================================================
-// VERSION: 1.0.33
-// FECHA: 3 de julio de 2026
+// VERSION: 1.0.49
+// FECHA: 5 de agosto de 2026
 // ARCHIVO: backend/recepcionProLogic.web.js
+//
+// v1.0.49: 🛍 HISTÓRICO DE COMPRA DE PRODUCTOS en getProductosCustomCliente.
+//          El panel de cliente de Recepción muestra ahora, además de PRIME,
+//          bonos y tarjetas, si esa clienta compra producto. Es dato de
+//          venta: quien ya se ha llevado producto a casa vuelve a comprar.
+//          Se resuelve con una query por contactId sobre
+//          PaymentReservations quedándose con las descripciones que llevan
+//          token 🛒 — el mismo criterio de parseo que usa el cierre.
+//          Devuelve `comprasProductos: { veces, total, ultimaFecha,
+//          ultimoProducto }`. Aditivo: quien no lo lea funciona igual.
+//
+// v1.0.48: 👤 QUIÉN COBRA ≠ QUIÉN TRABAJA — `soldBy` en el cobro.
+//          `PaymentReservations.staff` guarda el titular de la cita, o sea
+//          la COLUMNA del calendario. El informe lo usaba como "Cobrado por
+//          staff", lo cual es falso: quien pasa la tarjeta es quien está en
+//          recepción, no quien peinó. Si el salón trabaja sin capa de
+//          acceso, no hay ninguna persona detrás del cobro y todo debe ir a
+//          un único cajón, Administrador.
+//          Cambio: `marcarPagadoReserva` acepta `soldBy` (empleado logueado
+//          que envía el page code) y lo graba en el campo `soldBy` de
+//          PaymentReservations. `staff` NO se
+//          toca: sigue siendo el titular, del que dependen el cruce de
+//          externos y su comisión.
+//          Vacío = sin login → cierreLogicExtendido v1.1.7 lo agrupa como
+//          "Administrador".
+//          Aditivo: llamar sin soldBy deja el campo vacío y funciona igual.
+//
+// v1.0.47: 🧹 FUERA EL CRUCE DE PRODUCTOS VENDIDOS (v1.0.13).
+//          `getReservasPorFecha` cruzaba cada reserva con los pagos de
+//          producto del día por contactId, pegando la venta a la cita más
+//          cercana en el tiempo. Era heurístico por necesidad: el registro
+//          de venta no guarda ninguna referencia a la reserva. Efecto real:
+//          un producto vendido desde TIENDA después de cobrar la cita
+//          aparecía colgado de una cita ya cerrada, como si formara parte
+//          de ella.
+//          Decisión Jal (5-ago-2026): en la ficha de la cita no aparece
+//          ningún producto, nunca. Las ventas se ven en el informe del día
+//          (cierreLogicExtendido v1.1.6) con cliente, concepto, importe y
+//          vendedor. Se elimina el campo `productosVendidos` del payload y
+//          la query que lo alimentaba — una consulta menos a
+//          PaymentReservations en cada carga de agenda.
+//          Consumidor único: el widget, ya limpio en v1.1.92.
+//
+// v1.0.46: ⚖️ COBRO POR PESO EN EL MODAL DE CITA — `setLineWeight`.
+//          Contexto: el editor de servicios (edicionservicios v1.12.0+)
+//          permite marcar un servicio como POR PESO (`cobroporPeso` = true
+//          + `precioGramo` €/g). Hasta hoy ese modelo SOLO lo consumía el
+//          catálogo consultivo (catalogoConsultaLogic, presupuestos). En
+//          Recepción PRO el servicio entraba con `price` del catálogo — 0 €
+//          en los servicios por peso — y no había forma de cobrarlo salvo
+//          teclear el importe a mano con el botón "✎ Extra".
+//
+//          Decisión Jal (5-ago-2026): el peso se introduce EN EL MODAL DE
+//          LA CITA. La línea nace a 0 € y solo pasa a tener importe cuando
+//          la recepcionista teclea los gramos; el precio lo calcula el
+//          backend leyendo `precioGramo` de ServiceCatalog. El operador
+//          NUNCA envía euros: envía gramos.
+//
+//          A) NEW `setLineWeight({ reservaId, itemIndex, grams })`
+//             · Resuelve el servicio de esa línea igual que hace
+//               `quitarItemReserva` v1.0.41: label de la línea + conteo de
+//               ocurrencias previas → fase ocupante `tipo:'servicio'` con
+//               el mismo label → `setupUid`. Nada de adivinar por posición.
+//             · Lee ServiceCatalog por `setupUid`. Si `cobroporPeso` no es
+//               true o `precioGramo` <= 0 → rechaza SIN escribir nada.
+//             · precio = round(grams × precioGramo, 2). Se ESCRIBE (SET),
+//               no se suma → reeditable e idempotente: teclear 120 g dos
+//               veces deja el mismo importe, no el doble.
+//             · `precioTotal` se ajusta por DELTA (nuevo − anterior de esa
+//               línea), mismo criterio que quitarItemReserva. No se
+//               recalcula la suma entera para no tocar packs cuyo total
+//               incluya conceptos embebidos (Caso A).
+//             · Bloquea si la cita está PAGADA.
+//             · NO toca fases, duración, sessions ni pago.
+//
+//          B) NUEVO CAMPO CMS `lineWeights` (Text, JSON) en
+//             KamisuiteReservations: `{"items":[{"index":0,"grams":120}]}`.
+//             Guarda los GRAMOS tecleados por línea para que el modal los
+//             muestre al reabrir y sean reeditables (sin él solo
+//             sobrevivirían los euros y se perdería la trazabilidad del
+//             gramaje). Mismo patrón de envoltura {items:[...]} que `fases`
+//             y `sessionIds`.
+//
+//          C) `getCatalogoReserva` emite ahora `cobroporPeso` y
+//             `precioGramo` por servicio y por complemento (aditivo — el
+//             widget los necesita para saber qué línea lleva input de
+//             gramos). `getReservasPorFecha` devuelve `lineWeights`.
+//
+//          D) `quitarItemReserva` reindexa `lineWeights` al eliminar una
+//             línea (quita su entrada y decrementa los índices superiores).
+//             Sin esto, quitar un complemento dejaría los gramos apuntando
+//             a la línea equivocada.
+//
+//          NO se toca `marcarPagadoReserva`: la descripción del cobro sigue
+//          siendo "Servicio (importe€)" sin el gramaje. Meter " 120 g" en
+//          el nombre fragmentaría el agrupado por servicio de estadísticas
+//          y facturación. Si se quiere el gramaje en ticket/factura, es una
+//          decisión aparte.
+//
+// v1.0.45: 📐 EXTENSIÓN RAYADA POR FASE — `extenderFase`.
+//          Contexto: hasta v1.1.64 del widget, arrastrar el asa inferior
+//          de una cita creaba un BUFFER RAYADO detrás (campo raíz
+//          `extensionMin`) que se quitaba con una ✕. La v1.1.65 (29 jul)
+//          cambió el asa para que redimensionara la DURACIÓN de la fase
+//          (`redimensionarFase`) y dejó el buffer solo para reservas SIN
+//          fases — que en V2 no existen. Resultado: el bloque de color
+//          crecía, no había rayado y no había forma de deshacerlo.
+//          Jal: la extensión rayada es fundamental y debe estar en TODOS
+//          los servicios, principal o lavado.
+//
+//          Nueva función `extenderFase({ reservaId, faseIndex, extMin })`:
+//            · Escribe `extMin` DENTRO de la fase indicada (no en la raíz),
+//              que es lo que permite tener extensión en cualquier fase y no
+//              solo al final de la cita. extMin = 0 la quita.
+//            · NO desplaza ninguna otra fase, mismo criterio que
+//              `moverFase` y `redimensionarFase` v1.0.40: el operador manda.
+//            · Recalcula `duracionTotal` contando las extensiones:
+//              max(end + extMin) − min(start) de las fases ocupantes.
+//            · Bloquea si la cita está PAGADA y rechaza fases de proceso
+//              (PROCESO es hueco libre: extenderlo no significa nada).
+//
+//          `extenderReserva` / `quitarExtension` (campo raíz `extensionMin`)
+//          se conservan intactos para las reservas legacy sin fases.
+//          `redimensionarFase` tampoco se toca: sigue disponible aunque el
+//          widget v1.1.87 deje de invocarla desde el asa.
+//
+// v1.0.44: 🎚️ VARIANTES TAMBIÉN EN agregarComplementoReserva (botón
+//          "⛓ Complemento" del modal de cita). Mismo agujero que se cerró
+//          en v1.0.43 para agregarServicioReserva: un complemento con
+//          variantes (Peinado M/L/XL, Planchado…) se añadía siempre a
+//          precio y duración BASE porque no había parámetro donde mandar
+//          la elección.
+//          Nuevo parámetro OPCIONAL `varianteSel { label, price, duration }`.
+//          Sin él, comportamiento idéntico a v1.0.43.
+//          El label se compone con la MISMA regla que usa crearPackReserva
+//          desde v1.0.30: si el label de la variante ya empieza por el del
+//          complemento se usa tal cual (evita "Peinado Peinado M"); si no,
+//          se concatenan.
+//
+// v1.0.43: 🎚️ VARIANTES Y COMPLEMENTOS EN agregarServicioReserva.
+//          Hasta ahora esta función recibía solo { reservaId, setupUid,
+//          precioOverride }. Consecuencias reales que se corrigen aquí:
+//            · Un servicio CON variantes (Corte Mujer M/L/XL) se añadía
+//              siempre a precio y duración BASE — la variante no tenía
+//              por dónde llegar.
+//            · Un servicio con fases CASO B (obligatorias con variantes,
+//              p.ej. Botox → Planchado M/L/XL) devolvía
+//              `Falta elegir variante de: …` y NO se podía añadir nunca.
+//          Ahora acepta dos parámetros nuevos, ambos OPCIONALES:
+//            · varianteSel { idx, label, price, duration } — misma forma
+//              exacta que ya consume crearPackReserva desde v1.0.25.
+//            · complementosSetupUid [] — mismas dos formas que en
+//              crearPackReserva: string '<uid>' (simple) u objeto
+//              { uid, varianteId, varianteLabel, price, duration }.
+//          Sin ellos el comportamiento es IDÉNTICO al de v1.0.42
+//          (retrocompatible con el page code y el widget antiguos).
+//
+//          Dos helpers nuevos, ambos ADITIVOS:
+//            · aplicarVarianteAlPrincipal(principalBase, varianteSel)
+//            · normalizarComplementosElegidos(complementosSetupUid,
+//              porSetupUid)
+//          Contienen la MISMA lógica que crearPackReserva §1-bis y §4.
+//          DECISIÓN EXPLÍCITA: crearPackReserva NO se refactoriza para
+//          usarlos. Es el motor compartido por Recepción PRO, Recepción
+//          LITE Mobile y el widget público (widgetPublicoLogic
+//          .crearReservaPublica); tocarlo para una extracción mecánica
+//          añadiría riesgo a tres superficies sin aportar nada al
+//          usuario. Conceptos Fundacionales §19 y §20: cambio aditivo
+//          preferido sobre cambio destructivo.
+//
+//          agregarServicioReserva además:
+//            · Encola al final los complementos NO consumidos por el
+//              mapeoFases, con el mismo bucle que crearPackReserva §6.
+//            · Suma al precio el de cada complemento elegido y añade una
+//              línea por complemento a serviciosDetail (antes solo se
+//              añadía la línea del servicio principal).
+//            · Devuelve `faseIndexInicio`, `fasesAdded` y `fasesNuevas`
+//              (start/end/dur/ocupa/label) para que el widget pueda
+//              reubicar las fases recién creadas en otra columna con el
+//              contrato ya existente `moverFase`, sin backend nuevo.
+//          Sigue SIN disparar la centralita de comunicaciones: los
+//          servicios añadidos no generan un segundo WhatsApp/email al
+//          cliente. Comportamiento verificado en producción y deliberado.
+//
+// v1.0.42: ⏱️ FRECUENCIA MÍNIMA ENTRE USOS DEL BONO en aplicarCanjeProducto.
+//          Nuevo chequeo en la RAMA BONO, justo tras el de caducidad y
+//          antes del match de servicio. Si el bono trae bonusUseIntervalDays
+//          > 0 (snapshot congelado al emitir; 0/vacío = LIBRE), se mide el
+//          intervalo en DÍAS NATURALES (calendario Madrid) contra el
+//          redeemDate más reciente del bono en KamisuiteVoucherRedemptions.
+//          Si no ha transcurrido el intervalo → bloqueo con mensaje (último
+//          uso + fecha disponible). Primer uso (sin canjes previos) siempre
+//          pasa. Bloqueo DURO (sin override en V1). Cero cambios en
+//          confirmarCanjeProducto, en el modelo económico del bono, en la
+//          rama KP-, ni en ninguna otra función.
+//
+// v1.0.41: 🧹 FIX quitarItemReserva — al quitar un servicio, quitar también su
+//          fase OCUPANTE de la cascada. Antes solo se borraba del
+//          serviciosDetail (desaparecía del cobro) pero la fase seguía pintada
+//          y ocupando el hueco en calendario y motor de disponibilidad
+//          (regresión respecto a versiones anteriores). Ahora se elimina la
+//          fase ocupante (ocupa:true) cuya label coincide con el item,
+//          alineada por orden de aparición, dejando HUECO (no se desplaza el
+//          resto → libre para rellenar). PROCESO (ocupa:false) se deja
+//          (inocuo). Extras/productos sin fase: solo serviciosDetail, como
+//          antes. Recalcula fechaReserva/duracionTotal.
+//
+// v1.0.40: 📏 FIX redimensionarFase — NO desplazar otras fases. Revert del
+//          desplazamiento introducido en v1.0.39: redimensionar una fase
+//          cambia ÚNICAMENTE su dur/end. Las demás fases NO se tocan; si al
+//          alargar se solapa con la siguiente, se solapa (mismo criterio que
+//          moverFase; el operador decide). Se sigue recalculando
+//          fechaReserva/duracionTotal (agregados de la propia cita).
+//
+// v1.0.39: 📏 NEW redimensionarFase({ reservaId, faseIndex, nuevaDur }).
+//          Ajusta la DURACIÓN de cualquier fase ocupante de una cascada (no
+//          solo la última). Calcado de moverFase: rechaza PAGADO, fija
+//          dur/end de la fase indicada, recalcula fechaReserva/duracionTotal.
+//          Usado por Recepción PRO (asa de resize, ahora en todas las fases).
+//          [NOTA: la build desplegada de v1.0.39 desplazaba las fases
+//          posteriores; corregido en v1.0.40.]
+//
+// v1.0.38: 🏷️ PERSISTIR CATEGORÍA (group) EN CADA RESERVA.
+//          KamisuiteReservations solo grababa `family` (naturaleza técnica:
+//          simple/coloracion/tratamiento). La CATEGORÍA operativa real
+//          (coloracion, cortesmujer, caballero, tratamientos, manicura…) vive
+//          en ServiceCatalog.group y NO se estaba copiando a la reserva.
+//          Consecuencia: AKIRA (y cualquier consulta futura) tenía que cruzar
+//          KamisuiteReservations ↔ ServiceCatalog por nombre para saber la
+//          categoría — más lento, más tokens, riesgo de 504 y frágil ante un
+//          renombrado de categoría en el catálogo.
+//
+//          FIX: se graba `group` en la reserva, tomado del SERVICIO PRINCIPAL
+//          (regla de negocio: una reserva puede contener servicios de varias
+//          categorías, pero la del principal la categoriza). El dato ya estaba
+//          disponible: cargarCatalogoCompleto guarda el item crudo del
+//          catálogo en porSetupUid, así que `principal.group` existe sin tocar
+//          nada más. Cambio simétrico a `family`, tres registros:
+//            · pack normal  → group: principal.group || ''
+//            · a medida     → group: 'MEDIDA'   (fuera de catálogo)
+//            · bloqueo      → group: 'BLOQUEO'  (no comercial)
+//          Cubre en un único punto Recepción PRO, widget público y mobile:
+//          los tres delegan en crearPackReserva. Requiere campo `group`
+//          (Texto) en la colección KamisuiteReservations.
+//
+// v1.0.37: 🔗 Bifurcación del cobro por staff interno/externo en
+//          `marcarPagadoReserva`. Circuito de externos V2 (paridad V1):
+//          el checkout unificado de Recepción PRO discrimina según
+//          `StaffConfig.isExternal` del staff de la reserva y escribe
+//          el ledger de cobro en la colección que corresponde:
+//            · isExternal=false → PaymentReservations (KRI_<id>) — rama
+//              actual EXACTA, cero cambios (axioma 5).
+//            · isExternal=true  → PagoreservasExternos (EXT_<id>) —
+//              patrón literal replicado de externosLogic.marcarPagadoExterno
+//              v1.1.5 (axioma 6: asepsia jurídica, ledger separado).
+//          El status='PAGADO' de KamisuiteReservations se escribe una
+//          sola vez, común a ambas ramas. `descripcion`, `importeFinal`
+//          y `descripcionExtra` se calculan una sola vez antes del branch.
+//          Lookup de isExternal por StaffConfig.wixResourceId con el
+//          patrón ya presente en este mismo archivo (crearPackReserva,
+//          bloque de resolución de estilista). Fallback seguro:
+//          isExternal=false si el lookup falla o no encuentra staff.
+//          Cero cambios en cualquier otra función del archivo.
+//
+// v1.0.36: 🔗 Exponer `mapeoFases` + `minProceso` en el shape del servicio
+//          principal devuelto por `getCatalogoReserva`. Cambio aditivo,
+//          motivado por Recepción PRO v1.1.59: el widget necesita el
+//          mapeoFases para pintar los items tipo:'exclusivo' (grupo
+//          exclusivo, chip rojo del editor v1.14.0+) como un bloque de
+//          radios "No añadir + una opción por servicio del grupo". Sin
+//          exponerlo, el widget lee solo `s.complementos` y los tres
+//          tratamientos del grupo aparecen como toggles sueltos.
+//
+//          A la vez, para evitar duplicación en la UI de Recepción, se
+//          filtran del array `complementos` los uids que YA están en
+//          `refs` de algún item tipo:'exclusivo' del mapeoFases del
+//          principal (los pintará el widget dentro del panel del grupo).
+//          Simetría con widgetPublicoLogic v0.7.6.
+//
+//          Cero cambios en `construirFasesPack`, en `crearPackReserva`,
+//          en otros exports, ni en el widget bundle público. La v0.7.7
+//          simétrica del backend público queda pendiente para cuando se
+//          autorice.
+//
+// v1.0.35: 🩹 FIX Recepción PRO pedía elegir "Lavado obligatorio" y
+//          "Secado obligatorio" en el popup de Armar servicio, cuando el
+//          motor los materializa automáticamente en su posición del
+//          mapeoFases (Caso A de `construirFasesPack`).
+//
+//          Consecuencia del auto-marcado del editor v1.14.2: cuando el
+//          estilista guarda un servicio complejo, los chips verdes
+//          `obligatorio:true` de la cascada quedan también en el campo
+//          `complementos` del CMS. Eso permite a Recepción PRO
+//          "verlos" en la lista de servicios elegibles, pero introdujo
+//          el efecto lateral de emitirlos con `required:true` al
+//          widget, disparando el gating "X es obligatorio" del
+//          _armarServicio (línea 3336 de recepcionProCMS_widget
+//          v1.1.58).
+//
+//          Fix local a `getCatalogoReserva`: al armar el array
+//          `complementos` de cada servicio principal, se filtran los
+//          uids que cumplen a la vez:
+//            · Están como fase `tipo:'servicio'` en el mapeoFases del
+//              principal con `obligatorio:true`.
+//            · En catálogo tienen `hasVariants` false/vacío.
+//          Esos uids NO se emiten al widget — el motor los materializa
+//          sin input externo (Caso A). Los chips verdes obligatorios
+//          CON variantes (Caso B: Botox+Planchado M/L/XL) siguen
+//          apareciendo con `required:true` para que el cliente/estilista
+//          elija variante. Los opcionales (Caso C) también siguen
+//          apareciendo, como hasta ahora.
+//
+//          Cero cambios en `construirFasesPack`, en otros exports, ni
+//          en el widget RP CMS. Simetría pendiente en widgetPublicoLogic
+//          para cuando se autorice (mismo caso: hoy no aparece porque
+//          los CMS antiguos no tienen esos uids en `complementos`, pero
+//          en cuanto un servicio se resave desde el editor v1.14.2
+//          entrarán).
+//
+// v1.0.34: 🧬 MÉTODO COMPLETO — dos capacidades nuevas en el motor
+//          `construirFasesPack`, ambas aditivas y retrocompatibles:
+//
+//          A) DESDOBLE APLICACIÓN + PROCESO al materializar servicios.
+//             Cuando un servicio se materializa desde el mapeoFases
+//             (rama f.tipo === 'servicio' Caso A/B/C, o nueva rama
+//             'exclusivo' de más abajo), si el servicio referenciado
+//             tiene `minProceso > 0` en el catálogo, se empuja
+//             AUTOMÁTICAMENTE un bloque PROCESO detrás del bloque de
+//             aplicación (duración = svc.minProceso, ocupa:false, no
+//             genera session — libera al stylist tal como el chip
+//             Proceso del principal). Esto resuelve el caso "duplicado
+//             de tratamiento como componente de fase" (Kerastase,
+//             HairTimes, Matiz…): el salón mete el tratamiento como
+//             fila en categoría "COMPLEMENTOS DE FASES" con su propia
+//             `duration` (tiempo activo) y su propio `minProceso`
+//             (tiempo químico), y el motor los desdobla en cascada
+//             sin campo nuevo en el mapeoFases del principal.
+//             Sin `minProceso` (vacío o 0) → comportamiento actual
+//             (un solo bloque de duración plana). Regresión cero.
+//
+//          B) CHIP ROJO — grupo exclusivo de complementos.
+//             Nueva rama en el switch de mapeoFases:
+//               { tipo:'exclusivo', label:'Tratamiento',
+//                 refs:['setupUid1','setupUid2','setupUid3'] }
+//             Semántica: el cliente elige UNO de los refs (o NINGUNO).
+//             El motor busca en `compsMap` un uid ∈ refs; si lo
+//             encuentra, materializa ese servicio en la posición del
+//             chip rojo (aplicando A si el servicio elegido tiene
+//             minProceso > 0). Si ninguno de los refs llegó como
+//             complemento elegido → salta la fase, no materializa nada.
+//             refsConsumidos.add(uid) del elegido evita que además se
+//             encole al final como complemento suelto.
+//             Retrocompatibilidad total: si el mapeoFases no contiene
+//             ningún item tipo:'exclusivo' (todos los servicios ya
+//             configurados), el motor no cambia comportamiento.
+//
+//          Cero campos nuevos en CMS. Cero cambios en el resto de
+//          funciones exportadas. Cambio localizado en la única función
+//          `construirFasesPack`.
 //
 // v1.0.33: 🩹 FIX match del label en el canje de BONO CON VARIANTE.
 //          Cuando el bono se emitió sobre una variante concreta del
@@ -545,7 +904,6 @@
 //
 // v1.0.13: getReservasPorFecha ahora cruza con PaymentReservations para
 //          asociar productos vendidos a su cita. Cada reserva devuelve
-//          productosVendidos:[{nombre, cantidad, subtotal, metodoPago,
 //          fechaPago, staff}]. Match heurístico por contactId + cercanía
 //          temporal (venderProductosDesdeAgenda no graba reservaId en el
 //          bookingId del producto). Si un cliente tiene varias reservas
@@ -716,7 +1074,9 @@ import { services } from 'wix-bookings.v2';
 import { contacts } from 'wix-crm-backend';
 import wixData from 'wix-data';
 
-const VERSION = '1.0.33';
+// v1.0.43 — la constante venía desfasada respecto a la cabecera (rezagada
+// en '1.0.41' mientras la cabecera ya documentaba v1.0.42). Se sincroniza.
+const VERSION = '1.0.49';
 const TAG = `[RecepcionPRO][${VERSION}]`;
 const TIMEZONE = 'Europe/Madrid';
 
@@ -742,6 +1102,10 @@ const STATUS_PRIME_ACTIVA       = 'ACTIVA';
 
 const USOS_VALIDOS = ['kamisuite', 'ambos'];
 const PREFIJO_PAGO = 'KRI_'; // Kamisuite Reservations Internas
+
+// v1.0.37 — Circuito de externos V2 (ledger separado, axioma 6).
+const CMS_PAGOS_EXT   = 'PagoreservasExternos';
+const PREFIJO_PAGO_EXT = 'EXT_'; // Externos (patrón externosLogic.marcarPagadoExterno v1.1.5)
 // Recursos internos que NUNCA son columna del calendario (CUALQUIERA, PROCESO).
 // Patrón legacy: marcados con notes = "RECURSO INTERNO - no mostrar en widget".
 const NOTA_RECURSO_INTERNO = 'RECURSO INTERNO';
@@ -953,9 +1317,44 @@ export const getCatalogoReserva = webMethod(
             }
           }
           const compUids = jsonIn(it.complementos, 'items');
+
+          // v1.0.36 — Set de uids que YA salen como opción dentro de algún
+          // item tipo:'exclusivo' del mapeoFases del principal. Deben
+          // excluirse del array `complementos` que se emite al widget
+          // (Recepción PRO los pintará dentro del bloque "Grupos exclusivos"
+          // como radio; verlos también como toggles sueltos duplica la UI).
+          // Simetría con widgetPublicoLogic v0.7.6.
+          const uidsEnExclusivosEste = new Set();
+          if (Array.isArray(mapeoEste)) {
+            for (const f of mapeoEste) {
+              if (!f || f.tipo !== 'exclusivo' || !Array.isArray(f.refs)) continue;
+              for (const r of f.refs) if (typeof r === 'string' && r) uidsEnExclusivosEste.add(r);
+            }
+          }
+
           const complementos = (Array.isArray(compUids) ? compUids : [])
+            .filter(uid => !uidsEnExclusivosEste.has(uid))
             .map(uid => porSetupUid[uid])
             .filter(Boolean)
+            // v1.0.35 — Filtro AUTO-MATERIALIZADOS (Caso A del motor).
+            // Cuando un uid figura como fase tipo:'servicio' del mapeoFases
+            // con `obligatorio:true` y en catálogo NO tiene variantes, el
+            // motor (`construirFasesPack`) lo auto-materializa en su
+            // posición sin necesidad de que el cliente/estilista elija
+            // nada (rama Caso A: materializarConProceso con svc.label /
+            // svc.duration). En consecuencia, no debe aparecer en la lista
+            // de complementos que el widget muestra para elegir — pedir
+            // "Lavado obligatorio" o "Secado obligatorio" al estilista en
+            // Recepción PRO es absurdo cuando el motor ya se los cuela.
+            // Los chips verdes obligatorios CON variantes (Caso B:
+            // Botox+Planchado M/L/XL) SÍ deben seguir apareciendo, porque
+            // el cliente/estilista debe elegir variante. Los opcionales
+            // (Caso C) también siguen apareciendo, como siempre.
+            .filter(c => {
+              const fEste = fasesPorRefEste[c.setupUid];
+              const casoA = fEste && fEste.obligatorio === true && !c.hasVariants;
+              return !casoA;
+            })
             .map(c => {
               const cVars = (Array.isArray(jsonIn(c.variantes, 'items')) ? jsonIn(c.variantes, 'items') : [])
                 .map(v => (v && typeof v === 'object') ? { ...v, label: v.label || v.nombre || '' } : v);
@@ -967,7 +1366,10 @@ export const getCatalogoReserva = webMethod(
                 duration: toNum(c.duration),
                 hasVariants: !!c.hasVariants,
                 variantes: cVars,
-                required: !!(faseEnMapeo && faseEnMapeo.obligatorio === true)
+                required: !!(faseEnMapeo && faseEnMapeo.obligatorio === true),
+                // v1.0.46 — modelo de tarifa por peso (aditivo).
+                cobroporPeso: c.cobroporPeso === true,
+                precioGramo: toNum(c.precioGramo)
               };
             });
 
@@ -981,6 +1383,14 @@ export const getCatalogoReserva = webMethod(
             claseServicio: it.claseServicio || '',
             price: toNum(it.price),
             duration: toNum(it.duration),
+            // v1.0.46 — TARIFA POR PESO. `cobroporPeso` (Boolean) y
+            // `precioGramo` (Number, €/g) son campos de ServiceCatalog que
+            // escribe el editor de servicios desde v1.12.0. Hasta ahora no
+            // se emitían aquí, así que Recepción PRO no tenía forma de
+            // saber que una línea a 0 € en realidad se cobra por gramos.
+            // Aditivo: quien no los lea sigue funcionando igual.
+            cobroporPeso: it.cobroporPeso === true,
+            precioGramo: toNum(it.precioGramo),
             hasVariants: !!it.hasVariants,
             // v1.0.24 — Normalizar variantes para el widget de Recepción PRO.
             // El editor (serviciosEdicionLogic) las guarda como
@@ -999,6 +1409,18 @@ export const getCatalogoReserva = webMethod(
             image: it.image || null,
             wixAnclaId: it.wixAnclaId || '',
             complementos,
+            // v1.0.36 — Exponer mapeoFases parseado al widget para que
+            // Recepción PRO pueda pintar el bloque de "Grupos exclusivos"
+            // (items tipo:'exclusivo' del mapeoFases). Antes solo se
+            // consumía internamente en construirFasesPack; ahora el widget
+            // lo necesita para renderizar el radio de opciones.
+            // Se envía el array `items` (no la envoltura {items:[...]})
+            // para simplificar el consumo en frontend.
+            mapeoFases: Array.isArray(mapeoEste) ? mapeoEste : [],
+            // v1.0.36 — minProceso al frontend, para uso futuro visual
+            // (desdoble aplicación+proceso en la cascada informativa).
+            // Aditivo, no altera comportamiento actual del widget.
+            minProceso: toNum(it.minProceso),
             order: toNum(it.order)
           };
         });
@@ -1136,6 +1558,52 @@ function construirFasesPack({ principal, porSetupUid, horaInicioISO, compsPorRef
 
   const mapeo = jsonIn(principal.mapeoFases, 'items');
 
+  // v1.0.34 — HELPER interno para materializar un servicio en la cascada
+  // desdoblándolo en Aplicación + Proceso cuando svc.minProceso > 0.
+  // Uniforme para Caso A/B/C y la nueva rama 'exclusivo'. Cero cambio de
+  // comportamiento cuando el servicio no tiene minProceso.
+  //
+  //   svc          fila de ServiceCatalog (con .duration, .minProceso, etc.)
+  //   fase         etiqueta de la fase de aplicación (ej. 'COMPLEMENTO',
+  //                'INCLUIDA') para el bloque principal materializado.
+  //   labelOverride  opcional, si el label a mostrar difiere del svc.label
+  //                  (ej. Caso C con variante elegida usa comp.label ya
+  //                  compuesto con "Peinado M").
+  //   durOverride    opcional, si la duración difiere de svc.duration
+  //                  (ej. Caso C con variante elegida usa comp.duration).
+  const materializarConProceso = (svc, fase, labelOverride, durOverride) => {
+    const durAp = (durOverride != null) ? toNum(durOverride) : toNum(svc.duration);
+    const lab   = (labelOverride != null) ? labelOverride : (svc.label || '');
+    const endApISO = addMinutes(cursorISO, durAp);
+    fases.push({
+      fase,
+      tipo: 'servicio',
+      setupUid: svc.setupUid || '',
+      label: lab,
+      start: cursorISO,
+      end: endApISO,
+      dur: durAp,
+      ocupa: true
+    });
+    cursorISO = endApISO;
+    // Desdoble: si el servicio tiene minProceso > 0, empujar bloque proceso.
+    const mp = toNum(svc.minProceso);
+    if (mp > 0) {
+      const endProcISO = addMinutes(cursorISO, mp);
+      fases.push({
+        fase: 'PROCESO',
+        tipo: 'proceso',
+        setupUid: '',
+        label: 'Proceso',
+        start: cursorISO,
+        end: endProcISO,
+        dur: mp,
+        ocupa: false
+      });
+      cursorISO = endProcISO;
+    }
+  };
+
   if (!Array.isArray(mapeo) || mapeo.length === 0) {
     // Servicio simple (único / variantes / complemento): una fase = el propio servicio
     const dur = toNum(principal.duration);
@@ -1202,6 +1670,32 @@ function construirFasesPack({ principal, porSetupUid, horaInicioISO, compsPorRef
       continue;
     }
 
+    // v1.0.34 — CHIP ROJO: grupo exclusivo opcional. Cliente eligió UNO
+    // de los refs (o ninguno). Si eligió alguno, materializar ese
+    // servicio en esta posición (con desdoble si tiene minProceso).
+    // Si no llegó ninguno de los refs como complemento, saltar.
+    if (f?.tipo === 'exclusivo' && Array.isArray(f.refs) && f.refs.length > 0) {
+      let refElegido = null;
+      let compElegido = null;
+      for (const r of f.refs) {
+        const c = compsMap.get(r);
+        if (c) { refElegido = r; compElegido = c; break; }
+      }
+      if (!refElegido) continue;
+
+      const svc = porSetupUid[refElegido];
+      if (!svc) {
+        console.warn(`${TAG} ⚠️ Chip rojo ref no encontrado en catálogo: ${refElegido}`);
+        continue;
+      }
+      // Precio/duración/label del comp normalizado (puede llevar variante).
+      // Aplicación con datos del comp; proceso con minProceso del catálogo
+      // del servicio referenciado.
+      materializarConProceso(svc, 'COMPLEMENTO', compElegido.label, compElegido.duration);
+      refsConsumidos.add(refElegido);
+      continue;
+    }
+
     // — SERVICIO referenciado: modelo trinario v1.0.29.
     if (f?.tipo === 'servicio' && f.ref) {
       const svc = porSetupUid[f.ref];
@@ -1222,19 +1716,8 @@ function construirFasesPack({ principal, porSetupUid, horaInicioISO, compsPorRef
             faltanVariantes.push(svc.label || f.ref);
             continue;
           }
-          const dur = toNum(comp.duration);
-          const endISO = addMinutes(cursorISO, dur);
-          fases.push({
-            fase: 'COMPLEMENTO',
-            tipo: 'servicio',
-            setupUid: comp.setupUid,
-            label: comp.label,
-            start: cursorISO,
-            end: endISO,
-            dur,
-            ocupa: true
-          });
-          cursorISO = endISO;
+          // v1.0.34 — desdoble aplicación+proceso vía helper.
+          materializarConProceso(svc, 'COMPLEMENTO', comp.label, comp.duration);
           refsConsumidos.add(f.ref);
         } else {
           // CASO A: obligatoria sin variantes (Lavado, Secado en Color/Tratamiento).
@@ -1243,43 +1726,107 @@ function construirFasesPack({ principal, porSetupUid, horaInicioISO, compsPorRef
           // por alguna razón llegara también en compsNorm (no debería).
           // Como no está en compsNorm, tampoco entra en compsParaPrecio
           // ni en serviciosDetail; su precio queda embebido en el principal.
-          const dur = toNum(svc.duration);
-          const endISO = addMinutes(cursorISO, dur);
-          fases.push({
-            fase: 'INCLUIDA',
-            tipo: 'servicio',
-            setupUid: svc.setupUid || '',
-            label: svc.label || '',
-            start: cursorISO,
-            end: endISO,
-            dur,
-            ocupa: true
-          });
-          cursorISO = endISO;
+          // v1.0.34 — desdoble aplicación+proceso vía helper. Para Lavado
+          // y Secado (minProceso vacío) el helper no cambia comportamiento.
+          materializarConProceso(svc, 'INCLUIDA', svc.label || '', svc.duration);
           refsConsumidos.add(f.ref);
         }
       } else {
         // CASO C: NO obligatoria. Solo si el cliente la eligió.
         if (!comp) continue;
-        const dur = toNum(comp.duration);
-        const endISO = addMinutes(cursorISO, dur);
-        fases.push({
-          fase: 'COMPLEMENTO',
-          tipo: 'servicio',
-          setupUid: comp.setupUid,
-          label: comp.label,
-          start: cursorISO,
-          end: endISO,
-          dur,
-          ocupa: true
-        });
-        cursorISO = endISO;
+        // v1.0.34 — desdoble aplicación+proceso vía helper.
+        materializarConProceso(svc, 'COMPLEMENTO', comp.label, comp.duration);
         refsConsumidos.add(f.ref);
       }
     }
   }
 
   return { fases, refsConsumidos, faltanVariantes };
+}
+
+// =====================================================
+// HELPERS v1.0.43 — variante del principal y complementos elegidos
+//
+// Ambos replican la lógica que crearPackReserva ya ejecuta en línea
+// (§1-bis "variante aplicada al principal" y §4 "normalizar complementos").
+// Se escriben aquí como funciones para que agregarServicioReserva pueda
+// usar EXACTAMENTE el mismo criterio sin tocar el motor compartido.
+//
+// crearPackReserva NO se refactoriza para llamarlas: es el motor común de
+// Recepción PRO, Recepción LITE Mobile y el widget público. Una extracción
+// mecánica ahí añadiría riesgo a tres superficies sin beneficio funcional.
+// Si algún día se unifican, debe hacerse con despliegue por etapas y
+// verificación en las tres superficies (Conceptos Fundacionales §19).
+// =====================================================
+
+// Devuelve una COPIA del servicio con precio/duración/label de la variante
+// elegida. Sin varianteSel devuelve el objeto original sin tocar (nunca
+// muta el objeto cacheado del catálogo).
+function aplicarVarianteAlPrincipal(principalBase, varianteSel) {
+  if (!principalBase) return principalBase;
+  if (!varianteSel || typeof varianteSel !== 'object') return principalBase;
+
+  const vPrice = toNum(varianteSel.price);
+  const vDur = toNum(varianteSel.duration);
+  const vLabel = varianteSel.label ? String(varianteSel.label) : '';
+
+  const copia = {
+    ...principalBase,
+    price: vPrice,
+    duration: vDur > 0 ? vDur : toNum(principalBase.duration),
+    label: vLabel
+      ? `${principalBase.label || ''} · ${vLabel}`.trim()
+      : (principalBase.label || '')
+  };
+  console.log(`${TAG} 🎚️ Variante aplicada al principal: ${vLabel} | ${vPrice}€ | ${vDur}min`);
+  return copia;
+}
+
+// Normaliza el array de complementos elegidos a {setupUid,label,price,duration}.
+// Acepta las dos formas del contrato existente:
+//   · string '<setupUid>'  → complemento simple, precio/duración del catálogo.
+//   · objeto { uid, varianteId, varianteLabel, price, duration } → con variante.
+// Regla de label idéntica a crearPackReserva v1.0.30 (evita "Peinado Peinado M").
+function normalizarComplementosElegidos(complementosSetupUid, porSetupUid) {
+  const compArray = Array.isArray(complementosSetupUid) ? complementosSetupUid : [];
+  const compsNorm = [];
+
+  for (const item of compArray) {
+    const esObj = item && typeof item === 'object';
+    const uid = esObj ? item.uid : item;
+    const c = porSetupUid[uid];
+    if (!c) {
+      console.warn(`${TAG} ⚠️ Complemento no encontrado: ${uid}`);
+      continue;
+    }
+    if (esObj) {
+      const cLabel = (c.label || '').trim();
+      const vLabel = item.varianteLabel ? String(item.varianteLabel).trim() : '';
+      let labelFinal;
+      if (!vLabel) {
+        labelFinal = cLabel;
+      } else if (cLabel && vLabel.toLowerCase().startsWith(cLabel.toLowerCase())) {
+        labelFinal = vLabel;
+      } else {
+        labelFinal = `${cLabel} ${vLabel}`.trim();
+      }
+      compsNorm.push({
+        setupUid: c.setupUid || '',
+        label: labelFinal,
+        price: toNum(item.price),
+        duration: toNum(item.duration)
+      });
+    } else {
+      compsNorm.push({
+        setupUid: c.setupUid || '',
+        label: c.label || '',
+        price: toNum(c.price),
+        duration: toNum(c.duration)
+      });
+    }
+  }
+
+  return compsNorm;
 }
 
 // =====================================================
@@ -1556,6 +2103,7 @@ export const crearPackReserva = webMethod(
       const registro = {
         title,
         family: principal.family || 'simple',
+        group: principal.group || '',   // v1.0.38 — categoría operativa del servicio principal (categoriza la reserva completa)
         wixAnclaId,
         fechaReserva: new Date(startISO),
         duracionTotal,
@@ -1736,72 +2284,14 @@ export const getReservasPorFecha = webMethod(
         notes: item.notes || '',
         origenRecepcion: item.origenRecepcion !== false,
         extensionMin: toNum(item.extensionMin),  // v1.0.9
-        productosVendidos: [],                   // v1.0.13 — se rellena abajo
+        // v1.0.46 — gramos tecleados por línea en servicios de tarifa por
+        // peso: [{index, grams}]. El modal los repinta al reabrir la cita.
+        lineWeights: jsonIn(item.lineWeights, 'items'),
         tienePromoServicio: false,               // v1.0.19 — se rellena abajo si aplica
         descuentoServicioTotal: 0,               // v1.0.19 — suma del ahorro
         serviciosPromo: []                       // v1.0.19 — detalle de servicios con promo
       }));
 
-      // v1.0.13 — Cruzar con productos vendidos del día asociados a cada
-      // reserva por contactId + proximidad temporal. La función
-      // venderProductosDesdeAgenda guarda el bookingId como UUID propio
-      // (no referencia a la reserva), por eso se hace match heurístico:
-      //   · descripcion empieza con 🛒
-      //   · staff = TIENDA (o similar)
-      //   · mismo contactId que la reserva
-      //   · fechaPago dentro del día visualizado
-      // Si un cliente tiene varias reservas el mismo día y compra un
-      // producto, se asocia a la reserva con menor diferencia |fechaPago - fechaReserva|.
-      try {
-        const contactIdsDelDia = [...new Set(reservas.map(r => r.contactId).filter(Boolean))];
-        if (contactIdsDelDia.length) {
-          const pagosProd = await wixData.query('PaymentReservations')
-            .ge('fechaPago', startUTC)
-            .le('fechaPago', endUTC)
-            .hasSome('contactId', contactIdsDelDia)
-            .limit(500)
-            .find({ suppressAuth: true });
-
-          for (const pago of (pagosProd.items || [])) {
-            const desc = String(pago.descripcion || '').trim();
-            if (!desc.startsWith('🛒')) continue;  // solo productos
-            const cid = pago.contactId;
-            if (!cid) continue;
-            // Reservas candidatas con el mismo contactId
-            const candidatas = reservas.filter(r => r.contactId === cid);
-            if (!candidatas.length) continue;
-            // Elegir la candidata con menor delta temporal
-            const fp = new Date(pago.fechaPago).getTime();
-            let mejor = candidatas[0];
-            let mejorDelta = Math.abs(fp - new Date(mejor.fechaReserva).getTime());
-            for (let i = 1; i < candidatas.length; i++) {
-              const dlt = Math.abs(fp - new Date(candidatas[i].fechaReserva).getTime());
-              if (dlt < mejorDelta) { mejor = candidatas[i]; mejorDelta = dlt; }
-            }
-            // Parsear nombre + precio + cantidad
-            const m = desc.match(/^🛒\s*(.+?)\s*\(\s*([\d.,]+)\s*€?\s*\)\s*$/);
-            if (!m) continue;
-            let nombre = m[1].trim();
-            const subtotal = parseFloat(m[2].replace(',', '.')) || 0;
-            let cantidad = 1;
-            const qty = nombre.match(/^(.+?)\s+x(\d+)\s*$/i);
-            if (qty) { nombre = qty[1].trim(); cantidad = parseInt(qty[2], 10) || 1; }
-            mejor.productosVendidos.push({
-              paymentId: pago._id,
-              nombre,
-              cantidad,
-              subtotal: Math.round(subtotal * 100) / 100,
-              metodoPago: pago.tipoPago || '',
-              fechaPago: pago.fechaPago ? new Date(pago.fechaPago).toISOString() : '',
-              staff: pago.staff || ''
-            });
-          }
-        }
-      } catch (eProd) {
-        console.warn(`${TAG} ⚠ cruce productos:`, eProd.message);
-      }
-
-      const totalProdVend = reservas.reduce((s, r) => s + r.productosVendidos.length, 0);
 
       // v1.0.19 — Cruce con ServiceCatalog para detectar descuento
       // promocional por servicio. UNA SOLA query con `hasSome('setupUid',
@@ -1891,7 +2381,7 @@ export const getReservasPorFecha = webMethod(
       }
 
       const promoCount = reservas.filter(r => r.tienePromoServicio).length;
-      console.log(`${TAG} ✅ getReservasPorFecha ${fecha}: ${reservas.length} packs, ${totalProdVend} productos vinculados, ${promoCount} con descuento promocional`);
+      console.log(`${TAG} ✅ getReservasPorFecha ${fecha}: ${reservas.length} packs, ${promoCount} con descuento promocional`);
       return { ok: true, version: VERSION, reservas };
 
     } catch (e) {
@@ -1909,7 +2399,7 @@ export const getReservasPorFecha = webMethod(
 
 export const marcarPagadoReserva = webMethod(
   Permissions.SiteMember,
-  async ({ reservaId, metodoPago, desglosemetodopago, importeNeto, descripcionExtra }) => {
+  async ({ reservaId, metodoPago, desglosemetodopago, importeNeto, descripcionExtra, soldBy }) => {
     try {
       if (!reservaId) {
         return { ok: false, version: VERSION, error: { message: 'Falta reservaId' } };
@@ -1935,61 +2425,123 @@ export const marcarPagadoReserva = webMethod(
       await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
       console.log(`${TAG} ✅ KamisuiteReservations → PAGADO`);
 
-      // 2. Insert en PaymentReservations (anti-duplicado por bookingId)
+      // v1.0.37 — Determinar si el staff de la reserva es EXTERNO.
+      //   Lookup por StaffConfig.wixResourceId con el patrón ya usado en
+      //   este mismo archivo (crearPackReserva, resolución de estilista).
+      //   Fallback seguro: si el lookup falla o no encuentra staff, se
+      //   comporta como interno (isExternal=false) → nunca peor que hoy.
+      let esExterno = false;
       try {
-        const ahora = new Date();
-        const bookingIdKey = `${PREFIJO_PAGO}${reservaId}`;
-
-        // Descripción legible desde serviciosDetail
-        let descripcion = '';
-        if (registro.serviciosDetail) {
-          descripcion = registro.serviciosDetail.split(';;').filter(Boolean).map(s => {
-            const [name, price] = s.split('|');
-            return `${name || '?'} (${price || 0}€)`;
-          }).join(', ');
-        } else {
-          descripcion = registro.title || 'Servicio salón';
+        if (registro.staffId) {
+          const rStaff = await wixData.query(CMS_STAFF)
+            .eq('wixResourceId', registro.staffId)
+            .limit(1)
+            .find({ suppressAuth: true });
+          esExterno = !!rStaff.items?.[0]?.isExternal;
         }
-
-        // v1.0.4 — concatenar descripcionExtra (token descuento o cualquier nota)
-        if (descripcionExtra && String(descripcionExtra).trim()) {
-          descripcion = descripcion ? `${descripcion}, ${String(descripcionExtra).trim()}` : String(descripcionExtra).trim();
-        }
-
-        const existente = await wixData.query(CMS_PAGOS)
-          .eq('bookingId', bookingIdKey)
-          .limit(1)
-          .find({ suppressAuth: true });
-
-        if (existente.items.length > 0) {
-          console.warn(`${TAG} ⚠️ PaymentReservations ya tiene: ${bookingIdKey}`);
-        } else {
-          // v1.0.4 — usar importeNeto si llega y es válido (>=0); si no, precioTotal del registro
-          const importeFinal = (importeNeto != null && !isNaN(Number(importeNeto)) && Number(importeNeto) >= 0)
-            ? Number(importeNeto)
-            : toNum(registro.precioTotal);
-
-          const registroPago = {
-            bookingId: bookingIdKey,
-            contactId: registro.contactId || '',
-            descripcion,
-            fechaReserva: registro.fechaReserva || ahora,
-            fechaPago: ahora,
-            importeTotal: importeFinal,
-            nombreCliente: registro.clientName || 'Cliente',
-            staff: registro.staffName || '',
-            tipoPago: metodoPago || 'Efectivo',
-            desglosemetodopago: desglosemetodopago || ''
-          };
-
-          await wixData.insert(CMS_PAGOS, registroPago, { suppressAuth: true });
-          console.log(`${TAG} ✅ PaymentReservations insertado: ${bookingIdKey} | ${registroPago.importeTotal}€ | ${metodoPago}`);
-        }
-      } catch (payErr) {
-        console.warn(`${TAG} ⚠️ Error PaymentReservations: ${payErr.message}`);
+      } catch (staffErr) {
+        console.warn(`${TAG} ⚠️ Lookup isExternal falló, se trata como interno: ${staffErr.message}`);
       }
 
-      return { ok: true, version: VERSION, reservaId, metodoPago };
+      // v1.0.37 — Datos comunes a ambas ramas (se calculan una sola vez).
+      const ahora = new Date();
+
+      // Descripción legible desde serviciosDetail (idéntica en ambas ramas)
+      let descripcion = '';
+      if (registro.serviciosDetail) {
+        descripcion = registro.serviciosDetail.split(';;').filter(Boolean).map(s => {
+          const [name, price] = s.split('|');
+          return `${name || '?'} (${price || 0}€)`;
+        }).join(', ');
+      } else {
+        descripcion = registro.title || 'Servicio salón';
+      }
+
+      // v1.0.4 — concatenar descripcionExtra (token descuento o cualquier nota)
+      if (descripcionExtra && String(descripcionExtra).trim()) {
+        descripcion = descripcion ? `${descripcion}, ${String(descripcionExtra).trim()}` : String(descripcionExtra).trim();
+      }
+
+      // v1.0.4 — usar importeNeto si llega y es válido (>=0); si no, precioTotal del registro
+      const importeFinal = (importeNeto != null && !isNaN(Number(importeNeto)) && Number(importeNeto) >= 0)
+        ? Number(importeNeto)
+        : toNum(registro.precioTotal);
+
+      if (esExterno) {
+        // ─── RAMA EXTERNA (axioma 6) ───────────────────────────────────
+        // Ledger en PagoreservasExternos (EXT_<id>). Patrón literal
+        // replicado de externosLogic.marcarPagadoExterno v1.1.5: mismos
+        // 8 field IDs (bookingId, descripcion, fechaPago, fechaReserva,
+        // importeTotal, nombreCliente, staff, tipoPago). Esta colección NO
+        // tiene contactId ni desglosemetodopago en su schema, así que no
+        // se escriben (verificado en KamisuiteIds_ALL_fieldIDs_2.csv).
+        try {
+          const bookingIdKeyExt = `${PREFIJO_PAGO_EXT}${reservaId}`;
+
+          const existenteExt = await wixData.query(CMS_PAGOS_EXT)
+            .eq('bookingId', bookingIdKeyExt)
+            .limit(1)
+            .find({ suppressAuth: true });
+
+          if (existenteExt.items.length > 0) {
+            console.warn(`${TAG} ⚠️ PagoreservasExternos ya tiene: ${bookingIdKeyExt}`);
+          } else {
+            const registroPagoExt = {
+              bookingId: bookingIdKeyExt,
+              descripcion,
+              fechaPago: ahora,
+              fechaReserva: registro.fechaReserva || ahora,
+              importeTotal: importeFinal,
+              nombreCliente: registro.clientName || 'Cliente',
+              staff: registro.staffName || '',
+              tipoPago: metodoPago || 'Efectivo'
+              // v1.0.48 — aquí NO se escribe soldBy: el campo se creó en
+              // PaymentReservations, no en PagoreservasExternos.
+            };
+
+            await wixData.insert(CMS_PAGOS_EXT, registroPagoExt, { suppressAuth: true });
+            console.log(`${TAG} ✅ PagoreservasExternos insertado: ${bookingIdKeyExt} | ${registroPagoExt.importeTotal}€ | ${metodoPago}`);
+          }
+        } catch (payExtErr) {
+          console.warn(`${TAG} ⚠️ Error PagoreservasExternos: ${payExtErr.message}`);
+        }
+      } else {
+        // ─── RAMA INTERNA (axioma 5) — código actual EXACTO ────────────
+        // Insert en PaymentReservations (anti-duplicado por bookingId)
+        try {
+          const bookingIdKey = `${PREFIJO_PAGO}${reservaId}`;
+
+          const existente = await wixData.query(CMS_PAGOS)
+            .eq('bookingId', bookingIdKey)
+            .limit(1)
+            .find({ suppressAuth: true });
+
+          if (existente.items.length > 0) {
+            console.warn(`${TAG} ⚠️ PaymentReservations ya tiene: ${bookingIdKey}`);
+          } else {
+            const registroPago = {
+              bookingId: bookingIdKey,
+              contactId: registro.contactId || '',
+              descripcion,
+              fechaReserva: registro.fechaReserva || ahora,
+              fechaPago: ahora,
+              importeTotal: importeFinal,
+              nombreCliente: registro.clientName || 'Cliente',
+              staff: registro.staffName || '',
+              tipoPago: metodoPago || 'Efectivo',
+              desglosemetodopago: desglosemetodopago || '',
+              soldBy: String(soldBy || '').trim()   // v1.0.48 — quién cobró
+            };
+
+            await wixData.insert(CMS_PAGOS, registroPago, { suppressAuth: true });
+            console.log(`${TAG} ✅ PaymentReservations insertado: ${bookingIdKey} | ${registroPago.importeTotal}€ | ${metodoPago}`);
+          }
+        } catch (payErr) {
+          console.warn(`${TAG} ⚠️ Error PaymentReservations: ${payErr.message}`);
+        }
+      }
+
+      return { ok: true, version: VERSION, reservaId, metodoPago, esExterno };
 
     } catch (e) {
       console.error(`${TAG} ❌ marcarPagadoReserva:`, e.message);
@@ -2083,6 +2635,7 @@ export const crearReservaMedida = webMethod(
       const registro = {
         title: desc,
         family: 'medida',
+        group: 'MEDIDA',                // v1.0.38 — servicio fuera de catálogo: categoría propia
         claseServicio: 'medida',
         setupUid: 'MEDIDA-' + ts,
         wixAnclaId: '',
@@ -2183,6 +2736,7 @@ export const crearBloqueo = webMethod(
       const registro = {
         title: motivoFinal,
         family: 'BLOQUEO',
+        group: 'BLOQUEO',               // v1.0.38 — no es actividad comercial; AKIRA ya lo excluye por family
         claseServicio: 'bloqueo',
         setupUid: 'BLOQ-' + Date.now(),
         wixAnclaId: '',
@@ -2492,6 +3046,136 @@ export const agregarExtraReserva = webMethod(
   }
 );
 
+// ─── 8.2·bis Fijar PESO de una línea (tarifa por gramo) ──────
+// v1.0.46 — Servicios con `cobroporPeso: true` en ServiceCatalog entran en
+// la cita a 0 € (su `price` está vacío: el importe depende del producto que
+// se gaste). La recepcionista teclea los GRAMOS en el modal de la cita y
+// este método calcula el importe con el `precioGramo` (€/g) del catálogo.
+//
+// Reglas duras:
+//   · El operador manda gramos, NUNCA euros. El precio lo pone el backend
+//     leyendo el catálogo → cero confianza en el frontend.
+//   · SET, no suma: reescribir la misma línea con otros gramos corrige el
+//     importe en lugar de acumularlo. Idempotente.
+//   · `precioTotal` se ajusta por DELTA (importe nuevo − importe anterior de
+//     esa línea), igual que hace `quitarItemReserva`. No se recalcula la
+//     suma completa: hay packs cuyo total incluye conceptos embebidos
+//     (Caso A) que no tienen línea propia en serviciosDetail.
+//   · Cita PAGADA → rechazo. El importe ya está en el ledger.
+//   · Servicio que NO es de tarifa por peso → rechazo sin escribir.
+//   · grams = 0 → línea a 0 € y se borra la entrada de `lineWeights`
+//     (deshacer).
+//   · NO toca fases, duracionTotal, sessions ni pago.
+//
+// Resolución línea → servicio: mismo patrón que `quitarItemReserva` v1.0.41.
+// El label de la línea de serviciosDetail se cruza con la fase ocupante
+// `tipo:'servicio'` de idéntico label, alineando por número de ocurrencia
+// (soporta el mismo servicio repetido dos veces en la misma cita). De esa
+// fase sale el `setupUid`, que es lo único fiable para ir al catálogo.
+export const setLineWeight = webMethod(
+  Permissions.SiteMember,
+  async ({ reservaId, itemIndex, grams }) => {
+    try {
+      const idx = Math.max(0, parseInt(itemIndex, 10) || 0);
+      const g = Math.max(0, Math.round((Number(grams) || 0) * 100) / 100);
+      console.log(`${TAG} ⚖️ setLineWeight: reserva=${reservaId} línea=${idx} gramos=${g}`);
+
+      if (!reservaId) return { ok: false, error: 'reservaId requerido' };
+      if (!Number.isFinite(Number(grams))) return { ok: false, error: 'Gramos inválidos' };
+
+      const result = await wixData.query(CMS_RESERVAS)
+        .eq('_id', reservaId).limit(1)
+        .find({ suppressAuth: true });
+      if (result.items.length === 0) return { ok: false, error: 'Reserva no encontrada' };
+
+      const registro = result.items[0];
+      if (registro.status === 'PAGADO') {
+        return { ok: false, error: 'La cita ya está cobrada: no se puede cambiar el peso.' };
+      }
+
+      const items = String(registro.serviciosDetail || '').split(';;').filter(Boolean);
+      if (idx >= items.length) return { ok: false, error: 'Índice fuera de rango' };
+
+      // Línea actual: "label|precio|cant" (cant opcional, por defecto 1)
+      const partes = String(items[idx]).split('|');
+      const itemLabel = String(partes[0] || '').trim();
+      const precioAnterior = Number(partes[1]) || 0;
+      const cant = Number(partes[2]) || 1;
+      if (!itemLabel) return { ok: false, error: 'La línea no tiene etiqueta; no se puede identificar el servicio.' };
+
+      // ── Resolver setupUid del servicio de esta línea vía fases ──
+      let occ = 0;
+      for (let k = 0; k < idx; k++) {
+        if (String((items[k] || '').split('|')[0] || '').trim() === itemLabel) occ++;
+      }
+      let setupUidLinea = '';
+      const fasesArr = jsonIn(registro.fases, 'items');
+      if (Array.isArray(fasesArr) && fasesArr.length) {
+        let seen = 0;
+        for (const f of fasesArr) {
+          if (!f || f.tipo !== 'servicio') continue;
+          if (String(f.label || '').trim() !== itemLabel) continue;
+          if (seen === occ) { setupUidLinea = String(f.setupUid || ''); break; }
+          seen++;
+        }
+      }
+      if (!setupUidLinea) {
+        return { ok: false, error: 'No se puede identificar el servicio de esta línea (extra o producto manual).' };
+      }
+
+      // ── Leer tarifa del catálogo. Fuente única de verdad. ──
+      const catRes = await wixData.query(CMS_CATALOGO)
+        .eq('setupUid', setupUidLinea).limit(1)
+        .find({ suppressAuth: true });
+      if (catRes.items.length === 0) {
+        return { ok: false, error: 'El servicio de esta línea ya no está en el catálogo.' };
+      }
+      const svc = catRes.items[0];
+      const precioGramo = toNum(svc.precioGramo);
+      if (svc.cobroporPeso !== true || precioGramo <= 0) {
+        return { ok: false, error: `"${svc.label || itemLabel}" no está configurado con tarifa por peso.` };
+      }
+
+      // ── Importe de la línea ──
+      const precioNuevo = Math.round(g * precioGramo * 100) / 100;
+
+      const partesNuevas = partes.slice();
+      partesNuevas[1] = String(precioNuevo);
+      items[idx] = partesNuevas.join('|');
+      registro.serviciosDetail = items.join(';;');
+
+      const delta = Math.round((precioNuevo - precioAnterior) * cant * 100) / 100;
+      registro.precioTotal = Math.max(0, Math.round(((Number(registro.precioTotal) || 0) + delta) * 100) / 100);
+
+      // ── Persistir los gramos (campo lineWeights, Text JSON) ──
+      const pesos = jsonIn(registro.lineWeights, 'items')
+        .filter(w => w && Number.isFinite(Number(w.index)) && Number(w.index) !== idx);
+      if (g > 0) pesos.push({ index: idx, grams: g });
+      pesos.sort((a, b) => Number(a.index) - Number(b.index));
+      registro.lineWeights = wrapItems(pesos);
+
+      await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
+      console.log(`${TAG} ✅ Peso fijado: "${itemLabel}" ${g}g × ${precioGramo}€/g = ${precioNuevo}€ (Δ${delta}€). precioTotal=${registro.precioTotal}€`);
+
+      return {
+        ok: true,
+        reservaId,
+        itemIndex: idx,
+        label: itemLabel,
+        grams: g,
+        precioGramo,
+        precioLinea: precioNuevo,
+        precioTotal: registro.precioTotal,
+        serviciosDetail: registro.serviciosDetail,
+        lineWeights: pesos
+      };
+    } catch (e) {
+      console.error(`${TAG} ❌ setLineWeight:`, e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+);
+
 // ─── 8.3 Añadir Complemento (servicio del catálogo) ──────────
 // Lee el complemento desde ServiceCatalog (por setupUid). Suma duracionTotal
 // y precioTotal. Añade al detalle. Añade una fase {tipo:'servicio',ref} al
@@ -2499,7 +3183,7 @@ export const agregarExtraReserva = webMethod(
 // (si no hay ninguna ocupante, usa fechaReserva).
 export const agregarComplementoReserva = webMethod(
   Permissions.SiteMember,
-  async ({ reservaId, setupUid }) => {
+  async ({ reservaId, setupUid, varianteSel = null }) => {
     try {
       console.log(`${TAG} ⛓ Complemento en ${reservaId}: setupUid=${setupUid}`);
       if (!reservaId || !setupUid) return { ok: false, error: 'Faltan reservaId o setupUid' };
@@ -2517,9 +3201,26 @@ export const agregarComplementoReserva = webMethod(
         .find({ suppressAuth: true });
       if (r2.items.length === 0) return { ok: false, error: 'Complemento no encontrado en catálogo' };
       const svc = r2.items[0];
-      const svcDur = Number(svc.duration) || 0;
-      const svcPrice = Number(svc.price) || 0;
-      const svcLabel = svc.label || 'Complemento';
+      // v1.0.44 — variante elegida: sustituye precio, duración y label.
+      // Sin varianteSel se usan los valores base del catálogo (v1.0.43).
+      const baseLabel = svc.label || 'Complemento';
+      let svcDur = Number(svc.duration) || 0;
+      let svcPrice = Number(svc.price) || 0;
+      let svcLabel = baseLabel;
+      if (varianteSel && typeof varianteSel === 'object') {
+        const vDur = toNum(varianteSel.duration);
+        svcPrice = toNum(varianteSel.price);
+        if (vDur > 0) svcDur = vDur;
+        // Regla de label idéntica a crearPackReserva v1.0.30.
+        const cLabel = baseLabel.trim();
+        const vLabel = varianteSel.label ? String(varianteSel.label).trim() : '';
+        if (vLabel) {
+          svcLabel = (cLabel && vLabel.toLowerCase().startsWith(cLabel.toLowerCase()))
+            ? vLabel
+            : `${cLabel} ${vLabel}`.trim();
+        }
+        console.log(`${TAG} 🎚️ Variante de complemento: ${svcLabel} | ${svcPrice}€ | ${svcDur}min`);
+      }
 
       // Calcular start de la nueva fase
       // v1.0.16 FIX: tomar MAX(end) de las fases ocupantes, no la última
@@ -2577,14 +3278,28 @@ export const agregarComplementoReserva = webMethod(
 // v1.0.15: añade un servicio principal NUEVO al final de la cita existente.
 // Reutiliza `construirFasesPack` para armar las fases del nuevo servicio
 // (con cascada completa si es complejo, o una sola fase si es simple).
-//   - reservaId: id de la reserva existente
-//   - setupUid:  setupUid del nuevo servicio (puede ser simple o complejo)
-//   - precioOverride: opcional, si se quiere forzar otro precio (variantes)
 // Regla pedida por Jal: el servicio adicional se ENCADENA al final, después
 // de la última fase ocupante de la cita actual.
+//
+// v1.0.43 — payload ampliado (todo opcional, retrocompatible):
+//   - reservaId: id de la reserva existente                        (req.)
+//   - setupUid:  setupUid del nuevo servicio (simple o complejo)   (req.)
+//   - precioOverride: fuerza el precio del servicio principal añadido.
+//     Si llega, SUSTITUYE al precio de catálogo/variante (comportamiento
+//     previo intacto). Los complementos siguen sumando aparte.
+//   - varianteSel { idx, label, price, duration }: variante elegida del
+//     servicio que se añade. Misma forma que en crearPackReserva v1.0.25.
+//   - complementosSetupUid []: complementos elegidos, en las dos formas
+//     del contrato (string uid | objeto con variante). Es lo que permite
+//     resolver las fases CASO B (obligatorias con variantes) que antes
+//     hacían fallar la operación con `Falta elegir variante de: …`.
+//
+// NO dispara la centralita de comunicaciones (comportamiento existente y
+// deliberado): añadir servicios a una cita no genera un segundo aviso al
+// cliente. El único WhatsApp/email es el de crearPackReserva.
 export const agregarServicioReserva = webMethod(
   Permissions.SiteMember,
-  async ({ reservaId, setupUid, precioOverride }) => {
+  async ({ reservaId, setupUid, precioOverride, varianteSel = null, complementosSetupUid = [] }) => {
     try {
       console.log(`${TAG} ➕ Servicio adicional en ${reservaId}: setupUid=${setupUid}`);
       if (!reservaId || !setupUid) return { ok: false, error: 'Faltan reservaId o setupUid' };
@@ -2600,8 +3315,12 @@ export const agregarServicioReserva = webMethod(
       // Catálogo completo (para resolver refs de mapeoFases si el servicio nuevo
       // es complejo y referencia setupUids de otros servicios)
       const { porSetupUid } = await cargarCatalogoCompleto();
-      const principal = porSetupUid[setupUid];
-      if (!principal) return { ok: false, error: 'Servicio nuevo no encontrado en catálogo' };
+      const principalBase = porSetupUid[setupUid];
+      if (!principalBase) return { ok: false, error: 'Servicio nuevo no encontrado en catálogo' };
+
+      // v1.0.43 — variante elegida del servicio añadido. Sin varianteSel,
+      // `principal` es el objeto de catálogo tal cual (precio/duración base).
+      const principal = aplicarVarianteAlPrincipal(principalBase, varianteSel);
 
       // Hora de inicio del NUEVO servicio = MAX(end) de fases ocupantes
       // v1.0.16 FIX: con drag&drop una fase movida más tarde puede estar
@@ -2623,16 +3342,19 @@ export const agregarServicioReserva = webMethod(
         return { ok: false, error: 'No se puede calcular hora de inicio del servicio adicional' };
       }
 
-      // Construir las fases del nuevo servicio (cascada o simple).
-      // v1.0.29 — construirFasesPack devuelve {fases, refsConsumidos,
-      // faltanVariantes}. Aquí no pasamos compsPorRef: el operador añade
-      // el servicio raíz; las fases CASO A (obligatorias sin variantes,
-      // ej. Lavado/Secado) se autoejecutan — correcto. Las fases CASO B
-      // (obligatorias con variantes, ej. Planchado M/L/XL) provocarían
-      // faltanVariantes y la operación falla; deuda conocida: no hay UI
-      // de elección de variante para servicios añadidos POST-creación.
-      const { fases: fasesNuevas, faltanVariantes: faltanVariantesAdd } = construirFasesPack({
-        principal, porSetupUid, horaInicioISO
+      // v1.0.43 — complementos elegidos normalizados + mapa por ref, que es
+      // lo que consume construirFasesPack para materializar en su posición
+      // las fases tipo:'servicio' del mapeo cuyo ref haya sido elegido.
+      // Con esto quedan cubiertos los tres casos del modelo:
+      //   CASO A (obligatoria sin variantes) → auto-materializa, no cobra.
+      //   CASO B (obligatoria con variantes) → llega elegida, ya no falla.
+      //   CASO C (opcional)                  → solo si viene elegida.
+      const compsNorm = normalizarComplementosElegidos(complementosSetupUid, porSetupUid);
+      const compsPorRef = new Map();
+      for (const c of compsNorm) compsPorRef.set(c.setupUid, c);
+
+      const { fases: fasesNuevas, refsConsumidos, faltanVariantes: faltanVariantesAdd } = construirFasesPack({
+        principal, porSetupUid, horaInicioISO, compsPorRef
       });
       if (Array.isArray(faltanVariantesAdd) && faltanVariantesAdd.length > 0) {
         return { ok: false, error: `Falta elegir variante de: ${faltanVariantesAdd.join(', ')}` };
@@ -2641,6 +3363,30 @@ export const agregarServicioReserva = webMethod(
         return { ok: false, error: 'No se pudieron construir las fases del servicio adicional' };
       }
 
+      // v1.0.43 — Encolar al final los complementos que NO tenían fase en el
+      // mapeoFases del servicio añadido. Mismo bucle que crearPackReserva §6.
+      let cursorISO = fasesNuevas[fasesNuevas.length - 1].end;
+      for (const comp of compsNorm) {
+        if (refsConsumidos.has(comp.setupUid)) continue;  // ya materializado en su posición
+        const durComp = comp.duration;
+        const endCompISO = addMinutes(cursorISO, durComp);
+        fasesNuevas.push({
+          fase: 'COMPLEMENTO',
+          tipo: 'servicio',
+          setupUid: comp.setupUid,
+          label: comp.label,
+          start: cursorISO,
+          end: endCompISO,
+          dur: durComp,
+          ocupa: true
+        });
+        cursorISO = endCompISO;
+      }
+
+      // Índice donde arrancan las fases nuevas dentro del array final. El
+      // widget lo usa para reubicarlas en otra columna vía `moverFase`.
+      const faseIndexInicio = fasesArr.length;
+
       // Concatenar al final
       const fasesFinales = [...fasesArr, ...fasesNuevas];
 
@@ -2648,14 +3394,26 @@ export const agregarServicioReserva = webMethod(
       const durNuevo = fasesNuevas.reduce((s, f) => s + (Number(f.dur) || 0), 0);
       const nuevaDuracionTotal = (Number(registro.duracionTotal) || 0) + durNuevo;
 
-      // Precio: usar precioOverride si llega, o principal.price
-      const precioNuevo = precioOverride != null ? Number(precioOverride) : (Number(principal.price) || 0);
+      // Precio del principal añadido: precioOverride si llega; si no, el de
+      // la variante elegida (ya aplicado en `principal`) o el base.
+      const precioPrincipal = (precioOverride != null)
+        ? Number(precioOverride)
+        : (Number(principal.price) || 0);
+
+      // Detalle (formato V1: nombre|precio|1). v1.0.43: una línea por
+      // complemento elegido, igual que hace crearPackReserva en el alta.
+      const detalleItems = [`${principal.label || 'Servicio'}|${precioPrincipal}|1`];
+      let precioNuevo = precioPrincipal;
+      for (const comp of compsNorm) {
+        precioNuevo += comp.price;
+        detalleItems.push(`${comp.label}|${comp.price}|1`);
+      }
       const nuevoPrecioTotal = (Number(registro.precioTotal) || 0) + precioNuevo;
 
-      // Detalle (formato V1: nombre|precio|1)
       const detalleActual = String(registro.serviciosDetail || '');
-      const nuevoItem = `${principal.label || 'Servicio'}|${precioNuevo}|1`;
-      const detalleNuevo = detalleActual ? `${detalleActual};;${nuevoItem}` : nuevoItem;
+      const detalleNuevo = detalleActual
+        ? `${detalleActual};;${detalleItems.join(';;')}`
+        : detalleItems.join(';;');
 
       registro.fases = { items: fasesFinales };
       registro.duracionTotal = nuevaDuracionTotal;
@@ -2663,7 +3421,7 @@ export const agregarServicioReserva = webMethod(
       registro.serviciosDetail = detalleNuevo;
 
       await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
-      console.log(`${TAG} ✅ Servicio añadido: ${principal.label} (+${durNuevo}min, +${precioNuevo}€) | fases nuevas: ${fasesNuevas.length}`);
+      console.log(`${TAG} ✅ Servicio añadido: ${principal.label} (+${durNuevo}min, +${precioNuevo}€) | fases nuevas: ${fasesNuevas.length} | idx ${faseIndexInicio}`);
       return {
         ok: true,
         reservaId,
@@ -2671,7 +3429,20 @@ export const agregarServicioReserva = webMethod(
         precio: precioNuevo,
         duracionTotal: nuevaDuracionTotal,
         precioTotal: nuevoPrecioTotal,
-        fasesAdded: fasesNuevas.length
+        fasesAdded: fasesNuevas.length,
+        // v1.0.43 — geometría de las fases recién creadas, para que el
+        // widget pueda reubicarlas con el contrato existente `moverFase`
+        // (modo "elegir profesional por servicio"). Solo lectura: quien no
+        // lo use no se entera de que existe.
+        faseIndexInicio,
+        fasesNuevas: fasesNuevas.map((f, i) => ({
+          index: faseIndexInicio + i,
+          label: f.label || '',
+          start: f.start,
+          end: f.end,
+          dur: Number(f.dur) || 0,
+          ocupa: !!f.ocupa
+        }))
       };
     } catch (e) {
       console.error(`${TAG} ❌ agregarServicioReserva:`, e.message);
@@ -2716,14 +3487,88 @@ export const quitarItemReserva = webMethod(
       // Calcular precio del item eliminado: formato "label|price|cant"
       const itemFuera = items[idx];
       const partes = itemFuera.split('|');
+      const itemLabel = String(partes[0] || '').trim();
       const precioUnit = Number(partes[1]) || 0;
       const cant = Number(partes[2]) || 1;
       const subtotal = Math.round(precioUnit * cant * 100) / 100;
 
-      // Eliminar y recomponer
+      // v1.0.41 — contar cuántos items con la MISMA etiqueta hay ANTES del que
+      // quitamos, para alinear duplicados con su fase correspondiente.
+      let occ = 0;
+      for (let k = 0; k < idx; k++) {
+        if (String((items[k] || '').split('|')[0] || '').trim() === itemLabel) occ++;
+      }
+
+      // Eliminar del serviciosDetail y recomponer precio
       items.splice(idx, 1);
       registro.serviciosDetail = items.join(';;');
       registro.precioTotal = Math.max(0, (Number(registro.precioTotal) || 0) - subtotal);
+
+      // v1.0.46 — Reindexar `lineWeights`: los gramos se guardan por índice
+      // de línea, así que al quitar una línea hay que borrar su entrada y
+      // decrementar las de índice superior. Sin esto, los gramos quedarían
+      // apuntando al servicio equivocado.
+      try {
+        const pesosPrev = jsonIn(registro.lineWeights, 'items');
+        if (Array.isArray(pesosPrev) && pesosPrev.length) {
+          const pesosNuevos = pesosPrev
+            .filter(w => w && Number.isFinite(Number(w.index)) && Number(w.index) !== idx)
+            .map(w => ({
+              index: Number(w.index) > idx ? Number(w.index) - 1 : Number(w.index),
+              grams: Number(w.grams) || 0
+            }));
+          registro.lineWeights = wrapItems(pesosNuevos);
+        }
+      } catch (ePesos) {
+        console.warn(`${TAG} ⚠ quitarItem: no se pudo reindexar lineWeights:`, ePesos.message);
+      }
+
+      // v1.0.41 — BUGFIX: quitar también la fase OCUPANTE correspondiente del
+      // array `fases`. Antes solo se quitaba del serviciosDetail (desaparecía
+      // del cobro) pero la fase seguía pintada y ocupando el hueco en el
+      // calendario y en el motor de disponibilidad. Se elimina la fase ocupante
+      // (ocupa:true) cuya label coincide con el item, alineada por orden de
+      // aparición. Se DEJA HUECO (no se desplaza el resto → queda libre para
+      // rellenar con otro servicio). Las fases PROCESO (ocupa:false) no pintan
+      // ni ocupan, así que se dejan (inocuas). Si no hay fase ocupante que
+      // coincida (p.ej. extras o productos añadidos a mano), solo se toca el
+      // serviciosDetail (comportamiento previo intacto).
+      try {
+        const fasesArr = jsonIn(registro.fases, 'items');
+        if (Array.isArray(fasesArr) && fasesArr.length && itemLabel) {
+          let seen = 0, removeAt = -1;
+          for (let i = 0; i < fasesArr.length; i++) {
+            const f = fasesArr[i];
+            if (f && f.ocupa && String(f.label || '').trim() === itemLabel) {
+              if (seen === occ) { removeAt = i; break; }
+              seen++;
+            }
+          }
+          if (removeAt >= 0) {
+            fasesArr.splice(removeAt, 1);
+            registro.fases = { items: fasesArr };
+            // Recalcular fechaReserva/duracionTotal con las ocupantes restantes.
+            const ocupantes = fasesArr.filter(f => f && f.ocupa);
+            if (ocupantes.length) {
+              let minStart = Infinity, maxEnd = -Infinity;
+              for (const f of ocupantes) {
+                if (f.start) { const s = new Date(f.start).getTime(); if (s < minStart) minStart = s; }
+                if (f.end)   { const e = new Date(f.end).getTime();   if (e > maxEnd)   maxEnd = e; }
+              }
+              if (isFinite(minStart) && isFinite(maxEnd)) {
+                registro.fechaReserva = new Date(minStart);
+                registro.duracionTotal = Math.max(1, Math.round((maxEnd - minStart) / 60000));
+              }
+            }
+            console.log(`${TAG} 🧹 Fase ocupante "${itemLabel}" (fase idx ${removeAt}) quitada de la cascada; hueco liberado.`);
+          } else {
+            console.log(`${TAG} ℹ️ "${itemLabel}" sin fase ocupante coincidente (extra/producto o ya ausente); solo serviciosDetail.`);
+          }
+        }
+      } catch (eFases) {
+        console.error(`${TAG} ⚠️ quitarItem: no se pudo actualizar fases:`, eFases.message);
+        // No abortamos: al menos serviciosDetail/precio quedan corregidos.
+      }
 
       await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
       console.log(`${TAG} ✅ Item quitado: "${itemFuera}" (-${subtotal}€). Resto: ${items.length} items, precioTotal=${registro.precioTotal}€`);
@@ -2844,6 +3689,172 @@ export const moverFase = webMethod(
 );
 
 // =====================================================
+// 8.b REDIMENSIONAR FASE — ajustar la duración de una fase
+// =====================================================
+//   Cambia ÚNICAMENTE la DURACIÓN (dur/end) de la fase `faseIndex`. NO
+//   desplaza ni toca ninguna otra fase: si al alargar se solapa con la
+//   siguiente, se solapa (mismo criterio que moverFase; el operador decide).
+//   - PROCESO (ocupa=false) no se redimensiona (no tiene asa en el widget).
+//   - PAGADO se rechaza (igual que moverFase).
+//   - Recalcula fechaReserva = min(start) y duracionTotal = max(end) − min(start)
+//     de las ocupantes (agregados de la propia cita).
+
+// ─── Extensión rayada POR FASE (v1.0.45) ───────────────────────
+// Guarda `extMin` dentro de la fase. Es un buffer visual detrás de esa
+// fase concreta: no desplaza nada, no genera session y no se cobra.
+// extMin = 0 elimina la extensión.
+export const extenderFase = webMethod(
+  Permissions.SiteMember,
+  async ({ reservaId, faseIndex, extMin }) => {
+    try {
+      const min = Math.max(0, Math.round(Number(extMin) || 0));
+      console.log(`${TAG} 📐 extenderFase reserva=${reservaId} idx=${faseIndex} extMin=${min}`);
+      if (!reservaId) return { ok: false, error: 'Falta reservaId' };
+      if (faseIndex == null || isNaN(Number(faseIndex))) return { ok: false, error: 'faseIndex inválido' };
+
+      let registro;
+      try {
+        registro = await wixData.get(CMS_RESERVAS, reservaId, { suppressAuth: true });
+      } catch (e) {
+        return { ok: false, error: `Reserva no encontrada: ${reservaId}` };
+      }
+      if (!registro) return { ok: false, error: `Reserva no encontrada: ${reservaId}` };
+      if (registro.status === 'PAGADO') return { ok: false, error: 'No se puede extender una cita ya cobrada' };
+
+      const fasesArr = jsonIn(registro.fases, 'items');
+      const idx = Number(faseIndex);
+      if (idx < 0 || idx >= fasesArr.length) return { ok: false, error: `faseIndex fuera de rango (0..${fasesArr.length - 1})` };
+
+      const faseActual = fasesArr[idx];
+      if (!faseActual) return { ok: false, error: 'Fase no encontrada' };
+      // PROCESO es hueco libre por definición: no se extiende.
+      if (faseActual.ocupa === false) return { ok: false, error: 'Las fases de proceso no se extienden' };
+
+      // Solo se toca esta fase. Si extMin = 0, el campo se elimina para no
+      // dejar basura en el JSON.
+      const fasesNew = fasesArr.map((f, i) => {
+        if (i !== idx) return { ...f };
+        const nf = { ...f };
+        if (min > 0) nf.extMin = min;
+        else delete nf.extMin;
+        return nf;
+      });
+
+      // duracionTotal = max(end + extMin) − min(start) de las ocupantes.
+      const ocupantes = fasesNew.filter(f => f && f.ocupa);
+      let minStart = Infinity, maxEnd = -Infinity;
+      for (const f of ocupantes) {
+        if (f.start) {
+          const st = new Date(f.start).getTime();
+          if (!isNaN(st) && st < minStart) minStart = st;
+        }
+        if (f.end) {
+          const en = new Date(f.end).getTime() + (Number(f.extMin) || 0) * 60000;
+          if (!isNaN(en) && en > maxEnd) maxEnd = en;
+        }
+      }
+
+      registro.fases = { items: fasesNew };
+      if (isFinite(minStart) && isFinite(maxEnd) && maxEnd > minStart) {
+        registro.duracionTotal = Math.max(1, Math.round((maxEnd - minStart) / 60000));
+      }
+
+      await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
+      console.log(`${TAG} ✅ Extensión de fase ${idx} = ${min} min | duracionTotal=${registro.duracionTotal}`);
+      return {
+        ok: true,
+        reservaId,
+        faseIndex: idx,
+        extMin: min,
+        duracionTotal: registro.duracionTotal
+      };
+    } catch (e) {
+      console.error(`${TAG} ❌ extenderFase:`, e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+);
+
+export const redimensionarFase = webMethod(
+  Permissions.SiteMember,
+  async ({ reservaId, faseIndex, nuevaDur }) => {
+    try {
+      console.log(`${TAG} 📏 redimensionarFase reserva=${reservaId} idx=${faseIndex} nuevaDur=${nuevaDur}`);
+      if (!reservaId) return { ok: false, error: 'Falta reservaId' };
+      if (faseIndex == null || isNaN(Number(faseIndex))) return { ok: false, error: 'faseIndex inválido' };
+      const nueva = Math.max(1, Math.round(Number(nuevaDur) || 0));
+      if (!nueva) return { ok: false, error: 'nuevaDur inválida' };
+
+      let registro;
+      try {
+        registro = await wixData.get(CMS_RESERVAS, reservaId, { suppressAuth: true });
+      } catch (e) {
+        return { ok: false, error: `Reserva no encontrada: ${reservaId}` };
+      }
+      if (!registro) return { ok: false, error: `Reserva no encontrada: ${reservaId}` };
+      if (registro.status === 'PAGADO') return { ok: false, error: 'No se puede redimensionar una cita ya cobrada' };
+
+      const fasesArr = jsonIn(registro.fases, 'items');
+      const idx = Number(faseIndex);
+      if (idx < 0 || idx >= fasesArr.length) return { ok: false, error: `faseIndex fuera de rango (0..${fasesArr.length - 1})` };
+
+      const faseActual = fasesArr[idx];
+      if (!faseActual) return { ok: false, error: 'Fase no encontrada' };
+      if (faseActual.ocupa === false) return { ok: false, error: 'Las fases de proceso no se redimensionan' };
+      if (!faseActual.start) return { ok: false, error: 'La fase no tiene inicio' };
+
+      // Duración actual de la fase
+      let durOld = Number(faseActual.dur) || 0;
+      if (!durOld && faseActual.end) {
+        durOld = Math.max(1, Math.round((new Date(faseActual.end).getTime() - new Date(faseActual.start).getTime()) / 60000));
+      }
+      if (!durOld) durOld = 30;
+
+      const startMs = new Date(faseActual.start).getTime();
+      const newEndMs = startMs + nueva * 60000;
+
+      // v1.0.40 — SOLO cambia dur/end de ESTA fase. NO se desplaza ni se toca
+      // ninguna otra fase. Si al alargar se solapa con la siguiente, se
+      // solapa: el código no reordena la cita (mismo criterio que moverFase;
+      // el operador es el responsable).
+      const fasesNew = fasesArr.map((f, i) => {
+        if (i === idx) return { ...f, dur: nueva, end: new Date(newEndMs).toISOString() };
+        return { ...f };
+      });
+
+      // Recalcular fechaReserva = min(start) y duracionTotal = max(end) − min(start) de ocupantes
+      const ocupantes = fasesNew.filter(f => f && f.ocupa);
+      let minStart = Infinity, maxEnd = -Infinity;
+      for (const f of ocupantes) {
+        if (f.start) { const s = new Date(f.start).getTime(); if (s < minStart) minStart = s; }
+        if (f.end)   { const e = new Date(f.end).getTime();   if (e > maxEnd)   maxEnd = e; }
+      }
+      if (!isFinite(minStart) || !isFinite(maxEnd)) {
+        minStart = startMs; maxEnd = newEndMs;
+      }
+
+      registro.fases = { items: fasesNew };
+      registro.fechaReserva = new Date(minStart);
+      registro.duracionTotal = Math.max(1, Math.round((maxEnd - minStart) / 60000));
+
+      await wixData.update(CMS_RESERVAS, registro, { suppressAuth: true });
+      console.log(`${TAG} ✅ Fase redimensionada (sin tocar otras): idx=${idx} ${durOld}→${nueva}min | duracionTotal=${registro.duracionTotal}min`);
+      return {
+        ok: true,
+        reservaId,
+        faseIndex: idx,
+        nuevaDur: nueva,
+        fechaReserva: registro.fechaReserva.toISOString(),
+        duracionTotal: registro.duracionTotal
+      };
+    } catch (e) {
+      console.error(`${TAG} ❌ redimensionarFase:`, e.message);
+      return { ok: false, error: e.message };
+    }
+  }
+);
+
+// =====================================================
 // 9. GET CONSTANTS (utilidad de diagnóstico)
 // =====================================================
 
@@ -2912,7 +3923,7 @@ export const getProductosCustomCliente = webMethod(
       const safeContactId = String(contactId || '').trim();
       if (!safeContactId) {
         // Cliente provisional sin contactId: solo input manual disponible.
-        return { ok: true, version: VERSION, prime: null, bonos: [], tarjetas: [] };
+        return { ok: true, version: VERSION, prime: null, bonos: [], tarjetas: [], comprasProductos: { veces: 0, total: 0, ultimaFecha: null, ultimoProducto: '' } };
       }
 
       const ahora = new Date();
@@ -2998,8 +4009,46 @@ export const getProductosCustomCliente = webMethod(
         console.warn(`${TAG} ⚠️ getProductosCustomCliente tarjetas: ${errTarjetas.message}`);
       }
 
-      console.log(`${TAG} 📦 ProductosCustom cliente ${safeContactId}: prime=${prime ? 'sí' : 'no'} bonos=${bonos.length} tarjetas=${tarjetas.length}`);
-      return { ok: true, version: VERSION, prime, bonos, tarjetas };
+      // 4) v1.0.49 — Histórico de compra de producto. Un cobro puede
+      // llevar varios tokens 🛒; cuenta como una compra (una visita en la
+      // que se llevó producto), pero suma el importe de todos.
+      let comprasProductos = { veces: 0, total: 0, ultimaFecha: null, ultimoProducto: '' };
+      try {
+        const compras = await wixData.query(CMS_PAGOS)
+          .eq('contactId', safeContactId)
+          .descending('fechaPago')
+          .limit(100)
+          .find({ suppressAuth: true });
+        for (const pago of (compras.items || [])) {
+          const desc = String(pago.descripcion || '');
+          if (desc.indexOf('🛒') === -1) continue;
+          let importePro = 0;
+          let primerNombre = '';
+          for (const raw of desc.split(/,\s*/)) {
+            const token = raw.trim();
+            if (!token.startsWith('🛒')) continue;
+            const m = token.match(/^🛒\s*(.+?)\s*\(\s*([\d.,]+)\s*€?\s*\)\s*$/);
+            if (!m) continue;
+            if (!primerNombre) primerNombre = m[1].trim().replace(/\s+x\d+\s*$/i, '');
+            importePro += parseFloat(String(m[2]).replace(',', '.')) || 0;
+          }
+          if (importePro <= 0 && !primerNombre) continue;
+          comprasProductos.veces += 1;
+          comprasProductos.total = Math.round((comprasProductos.total + importePro) * 100) / 100;
+          if (!comprasProductos.ultimaFecha && pago.fechaPago) {
+            comprasProductos.ultimaFecha = new Date(pago.fechaPago).toISOString();
+            comprasProductos.ultimoProducto = primerNombre;
+          }
+        }
+      } catch (errCompras) {
+        console.warn(`${TAG} ⚠️ getProductosCustomCliente compras: ${errCompras.message}`);
+      }
+
+      console.log(`${TAG} 📦 ProductosCustom cliente ${safeContactId}: prime=${prime ? 'sí' : 'no'} bonos=${bonos.length} tarjetas=${tarjetas.length} compras=${comprasProductos.veces}`);
+      // contactId de vuelta (v1.0.49): el widget lo necesita para saber a
+      // qué cliente corresponde la respuesta — el panel y el modal de cobro
+      // usan el mismo mensaje y pueden pedir de dos clientes distintos.
+      return { ok: true, version: VERSION, contactId: safeContactId, prime, bonos, tarjetas, comprasProductos };
 
     } catch (e) {
       console.error(`${TAG} ❌ getProductosCustomCliente:`, e.message);
@@ -3085,6 +4134,54 @@ export const aplicarCanjeProducto = webMethod(
           const exp = new Date(bono.expirationDate);
           if (Number.isFinite(exp.getTime()) && exp <= ahora) {
             return { ok: false, version: VERSION, error: { message: 'El bono está caducado' } };
+          }
+        }
+
+        // v1.0.42 — FRECUENCIA MÍNIMA ENTRE USOS.
+        // El bono puede exigir un intervalo mínimo en días naturales entre
+        // canjes, congelado al emitir en bono.bonusUseIntervalDays
+        // (0/vacío = LIBRE). Se mide por día natural (calendario Madrid)
+        // contra el redeemDate más reciente del bono en el ledger. El
+        // primer uso (sin canjes previos) siempre pasa.
+        const intervaloDias = (typeof bono.bonusUseIntervalDays === 'number' && bono.bonusUseIntervalDays > 0)
+          ? Math.floor(bono.bonusUseIntervalDays)
+          : 0;
+        if (intervaloDias > 0) {
+          let ultimoCanjeMs = null;
+          try {
+            const redRes = await wixData.query(CMS_VOUCHER_REDEMPTIONS)
+              .eq('voucherId', bono._id)
+              .limit(1000)
+              .find({ suppressAuth: true });
+            for (const r of (redRes.items || [])) {
+              if (!r.redeemDate) continue;
+              const t = new Date(r.redeemDate).getTime();
+              if (Number.isFinite(t) && (ultimoCanjeMs === null || t > ultimoCanjeMs)) ultimoCanjeMs = t;
+            }
+          } catch (e) {
+            console.warn(`${TAG} ⚠️ intervalo bono ${safeCode}: query ledger falló (${e.message}) — se permite el canje`);
+          }
+          if (ultimoCanjeMs !== null) {
+            const DIA_MS = 86400000;
+            const madridDayMs = (ms) => {
+              const s = new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Europe/Madrid' }); // YYYY-MM-DD
+              const p = s.split('-');
+              return Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
+            };
+            const ultimoDia = madridDayMs(ultimoCanjeMs);
+            const hoyDia = madridDayMs(ahora.getTime());
+            const diasTranscurridos = Math.round((hoyDia - ultimoDia) / DIA_MS);
+            if (diasTranscurridos < intervaloDias) {
+              const disponibleMs = ultimoDia + intervaloDias * DIA_MS;
+              const fmt = (ms) => new Date(ms).toLocaleDateString('es-ES', { timeZone: 'Europe/Madrid' });
+              return {
+                ok: false,
+                version: VERSION,
+                error: {
+                  message: `Este bono admite un uso cada ${intervaloDias} días. Último uso: ${fmt(ultimoDia)}. Disponible desde: ${fmt(disponibleMs)}.`
+                }
+              };
+            }
           }
         }
 

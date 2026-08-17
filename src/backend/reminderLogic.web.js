@@ -1,8 +1,9 @@
 // =====================================================
-// [ReminderJob v1.5.0] - reminderLogic.web.js
+// [ReminderJob v1.4.0] - reminderLogic.web.js
 // Recordatorios automáticos 24h antes de la cita
 // Lee extendedBookings (Wix nativas) + SvExternalRecords (Externos)
-// Envía vía Triggered Email VGPVvYO + WhatsApp vía centralita.
+// Envía vía Triggered Email VGPVvYO replicando patrón de
+// enviarConfirmacionReserva (variables idénticas).
 // Idempotencia garantizada por colección ReminderLog.
 //
 // CHANGELOG:
@@ -16,32 +17,29 @@
 //            enviar via mapa inverso contactId → emails.
 //            Maneja info.emails como objeto {items:[]} o como array.
 //   v1.4.0 - Integración con centralita comunicacionesLogic.
-//   v1.5.0 - Toggle SalonConfig.reminderActive (Boolean).
 //
-// CAMBIOS v1.5.0:
-//   - Nuevo helper _getReminderActive() lee SalonConfig.reminderActive
-//     ANTES de ejecutar las 3 queries pesadas (CRM + Wix Bookings +
-//     Externos). Si false → aborta limpiamente con resumen shape
-//     estable (todos los contadores a 0, skipped:true, reason).
-//   - Lectura DEFENSIVA: solo aborta si reminderActive === false
-//     EXPLÍCITO. null/undefined/true/error → procede normal. Hair-Times
-//     producción no se afecta hasta que su SalonConfig tenga el campo
-//     en false; cuentas nuevas clonadas o sin campo siguen enviando.
-//   - Motivo: en Salon Kami (demo V2) las reservas están clonadas de
-//     Hair-Times con teléfonos reales. Si se enciende el reminder en
-//     Salon Kami sin filtrar, los clientes de Hair-Times reciben doble
-//     WhatsApp (uno por cuenta). Con reminderActive=false en Salon
-//     Kami, el cron arranca y aborta antes de cualquier query a Wix
-//     externos. Confirmaciones WhatsApp (recepcionProLogic v1.0.18+)
-//     intactas — el toggle es exclusivo del cron de recordatorios.
+// CAMBIOS v1.4.0:
+//   - Añadida llamada a notificarRecordatorio() de la centralita en
+//     paralelo al envío de email. Se invoca con canalesExcluidos:['email']
+//     para que la centralita NO duplique el email (la cascada de
+//     candidatos del reminder se mantiene como mecanismo defensivo
+//     por contactIds múltiples del legacy histórico).
+//   - Se llama EN AMBOS CASOS (email ok o email error) porque WhatsApp
+//     es canal paralelo. Si el email falló (cliente solo @hair-times.com),
+//     WhatsApp es el último recurso para llegar al cliente.
+//   - Extracción de teléfono añadida en leerCitasWix (de booking.contactDetails.phone)
+//     y leerCitasExternos (de SvExternalRecords.clientPhone si existe).
+//   - Propagación de teléfono al objeto agrupado por cliente.
+//   - DRY_RUN respetado: si está activo, tampoco se llama a la centralita.
+//   - Riesgo bajo: try/catch envolvente, no-blocking. Si la centralita
+//     falla, el email sigue funcionando como en v1.3.1.
 //
 //   No se toca:
-//     - Cascada de candidatos email
-//     - enviarRecordatorio (triggeredEmails.emailContact + cascada)
-//     - notificarWhatsAppViaCentralita
+//     - Cascada de candidatos email (mecanismo defensivo activo)
+//     - enviarRecordatorio() — sigue usando triggeredEmails.emailContact
 //     - Mapeo CRM, idempotencia, agrupación
-//     - Constantes hardcoded (PROFESIONAL_DEFAULT, DOMINIO_SALON,
-//       SITE_URL) — deuda técnica multi-tenant para versión futura.
+//     - Constantes hardcoded (PROFESIONAL_DEFAULT, DOMINIO_SALON, SITE_URL)
+//       — deuda técnica para multi-tenant en versión futura.
 // =====================================================
 
 import { webMethod, Permissions } from 'wix-web-module';
@@ -53,7 +51,7 @@ import { extendedBookings } from 'wix-bookings.v2';
 // v1.4.0: Centralita de comunicaciones
 import { notificarRecordatorio } from 'backend/comunicacionesLogic.web.js';
 
-const TAG = '[ReminderJob v1.5.0]';
+const TAG = '[ReminderJob v1.4.0]';
 const EMAIL_RECORDATORIO_ID = 'VGPVvYO';
 const PROFESIONAL_DEFAULT = 'Equipo Hair-Times';
 const DRY_RUN = false;
@@ -91,29 +89,6 @@ function formatearHora(d) {
 function esEmailSalon(email) {
   if (!email) return true;
   return email.toLowerCase().trim().endsWith(DOMINIO_SALON);
-}
-
-// ----------- v1.5.0: Toggle SalonConfig.reminderActive ---------
-// Lectura defensiva: solo apaga si === false EXPLÍCITO.
-// null/undefined/true/error de lectura → activo (fail-safe).
-// Esto garantiza que Hair-Times producción no se ve afectado hasta
-// que su SalonConfig tenga reminderActive=false explícitamente.
-async function _getReminderActive() {
-  try {
-    const res = await wixData.query('SalonConfig')
-      .limit(1)
-      .find({ suppressAuth: true });
-    if (res.items.length === 0) {
-      console.log(`${TAG} ℹ️ SalonConfig vacío — asumiendo reminderActive=true por defecto`);
-      return true;
-    }
-    const cfg = res.items[0];
-    if (cfg.reminderActive === false) return false;
-    return true;
-  } catch (e) {
-    console.error(`${TAG} ⚠️ Error leyendo SalonConfig.reminderActive (fail-safe → activo): ${e.message}`);
-    return true;
-  }
 }
 
 // ----------- Extraer TODOS los emails de un contacto CRM -----------
@@ -581,29 +556,6 @@ export const ejecutarRecordatoriosDiarios = webMethod(
     console.log(`${TAG} ▶️ Inicio ejecución | DRY_RUN=${DRY_RUN}`);
     const { inicio, fin, fechaLegible } = ventanaManana();
     console.log(`${TAG} 📆 Ventana mañana: ${fechaLegible} (${inicio.toISOString()} → ${fin.toISOString()})`);
-
-    // v1.5.0: Toggle SalonConfig.reminderActive — abortar si === false explícito.
-    // Lectura defensiva: null/undefined/true/error → activo (fail-safe).
-    // Se comprueba ANTES de las 3 queries pesadas (CRM + Wix Bookings + Externos)
-    // para no consumir API quota innecesariamente cuando el cron está apagado.
-    const reminderActive = await _getReminderActive();
-    if (!reminderActive) {
-      console.log(`${TAG} ⏸️ Recordatorios DESACTIVADOS en SalonConfig.reminderActive=false — ejecución abortada limpiamente`);
-      return {
-        ok: true,
-        skipped: true,
-        reason: 'reminderActive=false en SalonConfig',
-        dryRun: DRY_RUN,
-        fecha: fechaLegible,
-        totalCitas: 0,
-        clientesAgrupados: 0,
-        sinResolver: 0,
-        yaEnviados: 0,
-        enviadosOk: 0,
-        enviadosError: 0,
-        waInvocaciones: 0
-      };
-    }
 
     const [mapas, wix, externos] = await Promise.all([
       cargarMapaCRM(),

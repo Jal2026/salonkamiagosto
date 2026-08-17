@@ -2,10 +2,13 @@
 // PAGE CODE — Gestión de Personal KAMISUITE
 // HTML Component ID: #htmlStaffConfig
 // =====================================================
-// VERSION: 1.3.3
-// FECHA: 13 de marzo de 2026
+// VERSION: 1.3.4
+// FECHA: 6 de julio de 2026
 //
 // CHANGELOG:
+//   v1.3.4 - 06/07/2026 - Reenvía fechaFin (rango de fechas) a crearStaffBloqueo
+//            y crearCierreSalon. Cambio funcional puro: solo se añade el campo
+//            fechaFin al payload; el resto de handlers permanecen intactos.
 //   v1.1.0 - Eliminado sincronizarStaff (onboarding only)
 //            updateFoto recibe base64/fileName/mimeType
 //            Añadido eliminarStaff con comprobación bookings
@@ -29,7 +32,7 @@ import {
   eliminarCierreSalon
 } from 'backend/staffConfigLogic.web';
 
-const VERSION = '1.3.3';
+const VERSION = '1.3.4';
 const TAG = `[StaffPage][${VERSION}]`;
 
 // ─── HELPER ──────────────────────────────────────────
@@ -200,6 +203,7 @@ async function handleCrearBloqueo(msg) {
     const result = await crearStaffBloqueo({
       staffConfigId: msg.staffConfigId,
       fecha:         msg.fecha,
+      fechaFin:      msg.fechaFin,   // v1.3.4 — rango opcional
       inicio:        msg.inicio,
       fin:           msg.fin,
       motivo:        msg.motivo
@@ -226,10 +230,11 @@ async function handleEliminarBloqueo(msg) {
 async function handleCierreSalon(msg) {
   try {
     const result = await crearCierreSalon({
-      fecha:  msg.fecha,
-      inicio: msg.inicio,
-      fin:    msg.fin,
-      motivo: msg.motivo
+      fecha:    msg.fecha,
+      fechaFin: msg.fechaFin,   // v1.3.4 — rango opcional
+      inicio:   msg.inicio,
+      fin:      msg.fin,
+      motivo:   msg.motivo
     });
     if (!result.ok) throw new Error(result.error?.message || 'Error al crear cierre');
     sendToWidget('cierreSalonOk', {

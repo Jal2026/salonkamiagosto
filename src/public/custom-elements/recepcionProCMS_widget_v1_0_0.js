@@ -1,9 +1,858 @@
 /* =====================================================================
  * KAMISUITE — Widget Nueva Recepción PRO (CMS-first)
  * Custom Element: <recepcion-pro-cms>
- * VERSION: 1.1.58  ·  FIX botón "Convertir a factura" no abría el form
- * FECHA: 28 de junio de 2026
+ * VERSION: 1.1.103  ·  Los cobros externos, con su botón y su etiqueta
+ *
+ * v1.1.103 (12 ago 2026) — FUERA EL COMODÍN "SIN MÉTODO".
+ *
+ *   SÍNTOMA. En "Cobros por botón pulsado" salía una línea
+ *   "⚠️ Sin método registrado" con el cobro de una cita de EMY. En un
+ *   informe económico eso es inadmisible: si la cita consta COBRADA,
+ *   alguien pulsó un botón.
+ *
+ *   CAUSA REAL, en el backend. El cobro de una cita de profesional
+ *   externo no se guarda en PaymentReservations sino en
+ *   PagoreservasExternos, con bookingId 'EXT_<reservaId>'. La consulta
+ *   que cruza cobros con las citas del día solo miraba el prefijo
+ *   'KRI_', así que jamás encontraba esos cobros y el método llegaba
+ *   vacío. Corregido en cierreLogicExtendido v1.2.1 (Q2.6). El dato
+ *   siempre estuvo ahí: no se iba a buscar.
+ *
+ *   AQUÍ, EN EL WIDGET:
+ *     · Los cobros de citas externas van en su propia línea, con el
+ *       botón que se pulsó y el añadido · EXTERNO en violeta. No se
+ *       mezclan con los del salón: ese dinero pasa por el calendario
+ *       pero el salón no lo ingresa.
+ *     · Línea nueva bajo el total: "De los cuales EXTERNO — no entra
+ *       en la caja del salón", con su recuento e importe.
+ *     · El caso residual sin método deja de ser una categoría comodín
+ *       y pasa a llamarse por lo que es: "⚠️ Cobro sin fila en el CMS
+ *       — revisar", en rojo y al final de la lista. No es una cesta
+ *       donde tirar lo que no se sabe clasificar: es un defecto
+ *       concreto que hay que ir a arreglar. Con el backend v1.2.1
+ *       desplegado no debería aparecer nunca.
+ *     · El texto del botón 📋 COPIAR refleja lo mismo.
+ *
+ *   Requiere cierreLogicExtendido v1.2.1 (campo `esExterno` en
+ *   `clientes` y método resuelto). Con el backend v1.2.0 el bloque
+ *   sigue funcionando, pero los externos seguirán saliendo en la línea
+ *   de revisar, que es justo lo que hay que evitar.
+ *
+ * v1.1.102 (12 ago 2026) — Cobros por botón pulsado en Rendimiento
+ *   productivo.
+ *
+ * v1.1.102 (12 ago 2026) — RECUENTO POR BOTÓN DE COBRO en el bloque
+ *   📈 Rendimiento productivo del informe del día.
+ *
+ *   QUÉ ES. Una sección nueva, "🔢 Cobros por botón pulsado", justo
+ *   debajo de "Clientes del día". Lista cuántos cobros se pasaron con
+ *   cada botón del modal (Tarjeta / Efectivo / Bizum / Mixto / Canje) y
+ *   el importe que suma cada uno.
+ *
+ *   PARA QUÉ. Auditoría. Ante una duda o un descuadre, el staff abre
+ *   cita por cita, mira el chip "Cobrado con" de cada modal y comprueba
+ *   si en su momento se pulsó el botón correcto. Esta sección es el
+ *   total contra el que contrastar ese repaso.
+ *
+ *   POR QUÉ 'MIXTO' SIGUE SIENDO UNA CESTA PROPIA AQUÍ. Porque esto
+ *   cuenta PULSACIONES, no dinero por canal. Un cobro mixto fue UN
+ *   botón. El reparto del mixto entre tarjeta / efectivo / bizum es otra
+ *   pregunta — la del cuadre contra datáfono, cajón y extracto — y vive
+ *   en el bloque 💰 Cierre financiero, alimentado por
+ *   cierreLogicExtendido v1.2.0. Las dos vistas responden a preguntas
+ *   distintas y por eso no dan la misma cifra: no es un descuadre.
+ *
+ *   DE DÓNDE SALEN LOS DATOS. De `rendimiento.clientes`, la misma lista
+ *   que se acaba de pintar arriba — campos `status`, `metodoPago` y
+ *   `total`, que el backend ya enviaba desde v1.1.7. NO hay cambio de
+ *   backend ni de page code: es agregación en el propio widget, de modo
+ *   que la sección cuadra al céntimo con las filas de arriba por
+ *   construcción.
+ *
+ *   NADA SE ESCONDE. Una cita PAGADA sin método registrado no se
+ *   reparte ni se omite: sale en su propia línea "⚠️ Sin método
+ *   registrado".
+ *
+ *   El botón 📋 COPIAR del bloque incluye el recuento con el mismo
+ *   formato.
+ *
+ *   NO se toca: calendario, modal de cita, cobro, arqueo, ficha técnica,
+ *   Cierre financiero, reconciliación, ni ninguna otra sección.
+ *
+ * v1.1.101 (11 ago 2026) — FIX: el botón de FICHA TÉCNICA solo guardaba
+ *   la pestaña visible.
+ *   SÍNTOMA: se escribe en Color, se pasa a Tratamiento, se escribe, se
+ *   pasa a General, se escribe, se pulsa "Guardar anotación" — y en
+ *   KamisuiteClientRecords solo aparece una fila, la de la pestaña que
+ *   estaba abierta al pulsar. Las otras dos se quedaban en
+ *   `_fcBorrador` y se perdían al cerrar el modal, sin ningún aviso.
+ *   CAUSA: tres contenedores de texto y un único botón, pero
+ *   `_guardarFichaTecnica` leía solo `#fcTa`, el textarea visible, y
+ *   enviaba `recordType: this._fcTab`. Con un único botón no se le
+ *   puede pedir al operador que lo pulse tres veces.
+ *   ARREGLO:
+ *     · `_guardarFichaTecnica` vuelca el textarea visible al borrador y
+ *       recoge los TRES borradores. Guarda todos los que no estén
+ *       vacíos en la misma pulsación.
+ *     · Va UN SOLO mensaje `guardarFichaCliente` con `anotaciones: []`
+ *       en vez de tres mensajes seguidos. Motivo: el `sendResponse` del
+ *       page code de Recepción PRO es un `setAttribute` directo, sin
+ *       cola FIFO — tres respuestas en el mismo tick se pisan entre sí
+ *       y volveríamos a perder anotaciones, con otro síntoma.
+ *     · `_onFichaClienteGuardada` admite la lista `anotaciones` y sigue
+ *       admitiendo la `anotacion` suelta del formato anterior.
+ *     · Si alguna falla, se dice cuál y su borrador se conserva en
+ *       pantalla; las que entraron se limpian.
+ *   Requiere el page code 1.0.46. Sin él, el page code antiguo no
+ *   entiende `anotaciones` y no guardaría nada.
+ *   No se toca ningún otro flujo del widget, ni CSS, ni layout: el
+ *   modal se ve exactamente igual.
+ *
+ * v1.1.100 (10 ago 2026) — MENSAJE QUE EL CLIENTE DEJA AL RESERVAR ONLINE.
+ *   Vive en KamisuiteReservations.notes desde que el widget público lo
+ *   escribe, y hasta hoy no se leía en ninguna pantalla de Recepción: se
+ *   quedaba en el CMS sin que nadie lo viera.
+ *     · La cita que lleva mensaje se marca con BANDA ROJA en su lateral
+ *       izquierdo (.ks-appt.has-nota), y el tooltip lo avisa. El resto
+ *       del bloque de cita no cambia.
+ *     · El texto se lee en FICHA TÉCNICA, que es su sitio: arriba del
+ *       todo si es el mensaje de la cita desde la que se abre la ficha,
+ *       y dentro de su visita en el histórico.
+ *     · Se descarta 'RECURSO INTERNO': es una marca técnica del motor de
+ *       disponibilidad sobre ese mismo campo, no un mensaje de nadie.
+ *   Requiere clientRecordsLogic v1.0.1. Sin él, la banda roja funciona
+ *   igual (el dato ya viaja en getReservasPorFecha) y la ficha
+ *   simplemente no pinta los mensajes.
+ *
+ * v1.1.99 (10 ago 2026) — LA FICHA TÉCNICA PASA A SER ÚNICA Y ESTÁNDAR.
+ *
+ *   QUÉ SE VA. El popup que leía el histórico importado del software
+ *   anterior queda ELIMINADO del widget: su scrim, su render, sus
+ *   handlers y todo su CSS. Era una fuente de un solo salón, nacida de
+ *   una migración concreta, y no puede ser la ficha del producto.
+ *   Se retiran el mensaje `getFichaTecnica`, la respuesta
+ *   `fichaTecnicaData` y el estado `_ftCliente` / `_ftData`.
+ *
+ *   QUÉ QUEDA. Un único modal de FICHA TÉCNICA sobre
+ *   KamisuiteClientRecords, igual en todos los salones, que se abre
+ *   desde los dos sitios y con el mismo nombre en los dos:
+ *     · Botón 🎨 FICHA TÉCNICA de la barra superior. Sin cita.
+ *       HEREDA el cliente: primero el del panel izquierdo, que es lo
+ *       que el operador tiene delante; si no, el de la última cita
+ *       abierta. Si no hay ninguno, abre en modo búsqueda. El buscador
+ *       queda disponible para cambiar de cliente.
+ *     · Botón 🎨 FICHA TÉCNICA del modal de la cita. El cliente es el
+ *       de la cita y no se cambia: ahí no se pinta buscador.
+ *
+ *   QUÉ CONTIENE. Servicios y datos técnicos, nada de datos de
+ *   contacto: últimas visitas (fecha, hora, profesional y servicios,
+ *   sin importes), el mensaje permanente del cliente desde su Área, y
+ *   tres pestañas de anotación — Color, Tratamiento y General — con su
+ *   histórico fechado y firmado por quien lo escribió.
+ *
+ *   El buscador reutiliza el canal `ftBuscarCliente` /
+ *   `ftClientesEncontrados`, que filtra sobre el cache de contactos ya
+ *   cargado: no tiene ninguna relación con el histórico importado.
+ *   Por eso el page code no necesita cambios por este lado.
+ *
+ * v1.1.98 (10 ago 2026) — Superada por v1.1.99.
+ * v1.1.97 (10 ago 2026) — Superada por v1.1.99.
+ *
+ * v1.1.96 (5 ago 2026) — Al cargar un cliente en el panel izquierdo se
+ *   pintan chips con lo que ya tiene contratado: ⭐ PRIME, 🎟️ cada BONO
+ *   ACTIVO con su servicio y usos restantes, 🎁 tarjetas promocionales y
+ *   🛍 si tiene histórico de compra de producto (veces e importe).
+ *   Reutiliza el mensaje `getProductosCustom` que ya existía para el modal
+ *   de cobro; el backend (recepcionProLogic v1.0.49) añade el histórico de
+ *   compras y devuelve el contactId para poder distinguir de qué cliente
+ *   es cada respuesta — panel y modal piden por el mismo canal y pueden
+ *   estar sobre clientes distintos. Sin bonos ni compras no se pinta nada:
+ *   el panel se queda como estaba.
+ *
+ * v1.1.95 (5 ago 2026) — El preview de ACORTAR ya no queda tapado
+ *
+ * v1.1.95 (5 ago 2026) — FIX visual del acortado (v1.1.91). El preview de
+ *   recorte se pinta ENCIMA del bloque de la cita, pero tanto .ks-appt
+ *   como .ks-appt-resize-preview están en z-index 5, y .ks-appt:hover sube
+ *   a 8 — y durante el arrastre el cursor está sobre la cita, así que el
+ *   bloque tapaba el aviso: se recortaba a ciegas. El de extender no lo
+ *   sufría porque cae en hueco vacío, por debajo de la cita.
+ *   Ahora .is-cut va en z-index 12, por encima de la cita incluso con
+ *   hover, con línea de corte marcada arriba y el texto legible sobre el
+ *   rayado. El preview de extensión no se toca.
+ *
+ * v1.1.94 (5 ago 2026) — Observatorio semanal + confirmación datáfono/Bizum
+ *
+ * v1.1.94 (5 ago 2026) — Requiere cierreLogicExtendido v1.1.8,
+ *   cashRegisterLogic v1.1.4 y page code v1.0.43.
+ *     · Arqueo: bajo "Guardar arqueo", dos botones — Confirmar datáfono y
+ *       Confirmar Bizum — que dejan constancia de que la lectura coincide
+ *       con el informe. Es una confirmación humana, no una conciliación
+ *       importe a importe, y se guarda aparte del conteo de efectivo.
+ *       Al confirmar, el botón queda en verde con la fecha; se puede
+ *       deshacer volviendo a pulsar.
+ *     · Cierre financiero: bloque "Cobros de otros días" con los cobros
+ *       de hoy que corresponden a citas de otra fecha — cliente, importe,
+ *       método, quién cobró y de qué día es la cita.
+ *     · Cierre financiero: OBSERVATORIO SEMANAL al final. Lunes a domingo
+ *       con tarjeta, efectivo, bizum y total por día, y un chip por
+ *       método: CUADRADO en verde, PENDIENTE en rojo. Un método sin
+ *       cobros ese día no se marca: no hay nada que cuadrar.
+ *     · El botón COPIAR de los dos bloques exporta ya lo que se ve en
+ *       pantalla, con la agrupación por profesional, los chips y los
+ *       bloques nuevos.
+ *
+ * v1.1.93 (5 ago 2026) — Informe: quién cobra, y hora en cada servicio
+ *
+ * v1.1.93 (5 ago 2026) — Requiere cierreLogicExtendido v1.1.7.
+ *     · "Cobrado por staff" pasa a agrupar por QUIÉN COBRÓ (el empleado
+ *       logueado), no por la columna del calendario. Sin login, un único
+ *       cajón "Administrador". El subtítulo del bloque lo dice.
+ *     · Cada clienta lleva un tercer chip, 👤, con quién cobró.
+ *     · Servicios del día: cada servicio con su HORA de calendario y la
+ *       clienta, en orden cronológico dentro de cada profesional. Se deja
+ *       de agregar por nombre: agregando se perdía la hora, que es lo que
+ *       permite localizarlo.
+ *
+ * v1.1.92 (5 ago 2026) — Informe del día por profesional + detalle de ventas
+ *
+ * v1.1.92 (5 ago 2026) — INFORME DEL DÍA. Requiere cierreLogicExtendido
+ *   v1.1.6 (si no está desplegado, cada bloque nuevo cae al render antiguo).
+ *     · Servicios del día y Clientes del día se agrupan por PROFESIONAL,
+ *       con la atribución por fase que calcula el backend: quien ejecutó
+ *       la fase, no el titular del pack. Una cita repartida entre dos
+ *       aparece en las dos columnas, cada una con lo suyo, y lleva la
+ *       marca "compartida".
+ *     · Cada clienta lleva ahora dos chips: estado (PAGADO / PDTE) y
+ *       método de cobro.
+ *     · Bloques nuevos "Productos vendidos" y "Especiales vendidos" con
+ *       cliente + concepto + importe. Si el día no tuvo ventas, el bloque
+ *       se pinta igualmente con "Sin actividad": la ausencia de venta es
+ *       información, no un hueco.
+ *     · El producto deja de sumarse al total de servicio de la clienta.
+ *     · Cierre financiero: cada línea de producto lleva el chip del
+ *       empleado que despachó (`soldBy`); sin login → "Administrador".
+ *     · Cierre financiero: bloque nuevo "Pendiente de cobrar" con
+ *       cliente + servicios + profesional.
+ *     · Ficha de la cita: FUERA los productos vendidos. Se colaban ahí
+ *       ventas hechas desde TIENDA después de cobrar la cita, por un
+ *       cruce heurístico por contactId. Su sitio es el informe.
+ *
+ * v1.1.91 (5 ago 2026) — ACORTAR una fase con la misma asa que la extiende
+ *
+ * v1.1.91 (5 ago 2026) — La misma asa inferior que extiende ahora también
+ *   ACORTA. Arrastrar hacia abajo sigue creando extensión rayada, igual
+ *   que en v1.1.89. Arrastrar hacia ARRIBA:
+ *     · si la fase tiene extensión → la consume hasta 0 y ahí para
+ *       (comportamiento v1.1.89 literal, sin tocar);
+ *     · si la fase NO tiene extensión → recorta la DURACIÓN de la fase,
+ *       con mínimo de 5 minutos. El preview cambia de aspecto (bloque
+ *       rojo .is-cut) y anuncia la duración resultante y la nueva hora de
+ *       fin, para que no se confunda con la extensión.
+ *   Nunca se hacen las dos cosas en un mismo arrastre: quitar extensión y
+ *   acortar son dos gestos separados, una sola llamada al backend cada uno.
+ *
+ *   El acortado usa `redimensionarFase` (recepcionProLogic v1.0.40), que ya
+ *   existía y ya era simétrico — solo estaba sin disparador desde v1.1.89.
+ *   Mensaje 'redimensionar-fase', respuesta 'fase-redimensionada': ambos
+ *   ya estaban cableados en page code y widget.
+ *
+ *   IMPORTANTE: acortar NO sube las fases posteriores. Deja el hueco libre
+ *   (mismo criterio deliberado que moverFase y redimensionarFase: manda el
+ *   operador). Si se quiere cerrar el hueco, se arrastran las fases.
+ *
+ * v1.1.90 (5 ago 2026) — Cobro por PESO (gramos) en el modal de la cita
+ *
+ * v1.1.90 (5 ago 2026) — TARIFA POR PESO. Los servicios marcados POR PESO
+ *   en el editor (`cobroporPeso` + `precioGramo` €/g) entraban en la cita a
+ *   0 € y no había forma de cobrarlos salvo teclear el importe a mano con
+ *   "✎ Extra". Ahora, la línea de un servicio por peso muestra debajo un
+ *   campo de GRAMOS: se teclea el gramaje real gastado y el importe lo
+ *   calcula el backend (setLineWeight, recepcionProLogic v1.0.46) leyendo
+ *   el €/g del catálogo. El widget NUNCA manda euros, solo gramos.
+ *
+ *   · Qué línea lleva campo de gramos: se resuelve cruzando el label de la
+ *     línea de serviciosDetail con la fase ocupante `tipo:'servicio'` del
+ *     mismo label (alineado por nº de ocurrencia, soporta el mismo servicio
+ *     repetido) → setupUid → catálogo en memoria (`_porSetupUid`).
+ *   · Los gramos vienen de `r.lineWeights` (campo nuevo del CMS): al
+ *     reabrir la cita siguen ahí y son reeditables. Teclear otro gramaje
+ *     CORRIGE el importe, no lo acumula.
+ *   · Tras aplicar, el modal se repinta EN CALIENTE con el nuevo importe y
+ *     el nuevo TOTAL — sin cerrarse ni recargar. La agenda de detrás se
+ *     refresca en segundo plano.
+ *   · Cita cobrada: se muestra el gramaje en texto, sin campo editable.
+ *   · Nuevo CSS: .ks-weight-row / .ks-weight-input / .ks-weight-rate /
+ *     .ks-weight-ok. Ninguna clase existente se modifica.
+ *
+ * v1.1.89 (5 ago 2026) — REGRESIÓN CORREGIDA. Hasta v1.1.64, arrastrar el
+ *   asa inferior de una cita creaba un buffer RAYADO detrás, con una ✕
+ *   para quitarlo. La v1.1.65 (29 jul) cambió el asa para redimensionar la
+ *   DURACIÓN de la fase y dejó el rayado solo para reservas SIN fases —
+ *   que en V2 no existen. Desde entonces el bloque de color simplemente
+ *   crecía y no había manera de deshacerlo.
+ *
+ *   El asa vuelve a hacer extensión rayada, y ahora en CUALQUIER fase
+ *   ocupante: principal, lavado, peinado. Antes solo se podía extender al
+ *   final de la cita. Arrastrar hacia arriba hasta 0 la elimina, igual que
+ *   la ✕. Las fases de PROCESO no se extienden: son hueco libre.
+ *
+ *   El buffer vive en `extMin` DENTRO de cada fase, no en el campo raíz
+ *   `extensionMin`, que se conserva intacto para las reservas legacy.
+ *   Backend extenderFase (recepcionProLogic v1.0.45), puente
+ *   'extender-fase' (page code v1.0.39). `redimensionarFase` no se toca:
+ *   sigue en el backend aunque el asa ya no la invoque.
+ *
+ *   FIX de paso: el bloque rayado tenía suelo de 10px de alto y con
+ *   extensiones cortas la ✕ no cabía — quedaba imposible de quitar. Suelo
+ *   a 18px y la ✕ pasa a ser diana fija de 22px, usable en iPad.
+ *
+ *   LA CAPA TÁCTIL DE v1.1.87 QUEDA INTACTA: _bindTouchLongPressDrag,
+ *   _bindTouchImmediateDrag, la media query (hover: none) y el enganche
+ *   del asa al arrastre táctil no se han tocado. Esta versión se construyó
+ *   SOBRE v1.1.88, no sobre una base anterior.
+ *
+ * v1.1.88  ·  ARQUEO — recuperar el conteo guardado al reabrir
+ *
+ * v1.1.88 (5 ago 2026) — ARQUEO: EL CONTEO GUARDADO NO SE RECUPERABA.
+ *   El backend guardaba correctamente (countedCash y difference quedaban
+ *   escritos en CashRegister y el toast confirmaba), pero _openCaja()
+ *   arrancaba siempre con this._cajaContado = 0 y _renderCajaBody()
+ *   calculaba la diferencia contra esa variable, ignorando d.registro.
+ *   Resultado: al reabrir el modal el input salía vacío y la diferencia
+ *   volvía a pintarse en rojo con el negativo del efectivo esperado,
+ *   aunque la caja estuviese cuadrada y guardada. Lo mismo con la nota.
+ *   Ahora el render hidrata this._cajaContado y this._cajaNota desde
+ *   d.registro mientras el usuario no haya tecleado (flag
+ *   _cajaContadoTouched), de modo que un refresco posterior a guardar o
+ *   a registrar un movimiento no pisa lo que se está escribiendo.
+ *   Cambio aditivo: sin registro guardado el comportamiento es idéntico.
+ *
+ * v1.1.87 (5 ago 2026) — ARRASTRE CON EL DEDO. Los cuatro arrastres del
+ *   calendario estaban escritos exclusivamente contra mousedown /
+ *   mousemove / mouseup, y en un navegador táctil esa secuencia no
+ *   existe: un dedo que se desplaza produce touchmove y scroll, nunca
+ *   mousemove. En tablet quedaban muertos MOVER FASE, REDIMENSIONAR
+ *   FASE, EXTENDER CITA y CREAR BLOQUEO — este último de forma
+ *   silenciosa (un toque da mousedown+mouseup en el mismo punto, la
+ *   duración sale 0 y no se crea nada ni se avisa).
+ *
+ *   SOLUCIÓN — capa de traducción, no reescritura. La lógica de
+ *   arrastre NO se toca: se le entregan eventos de ratón sintéticos
+ *   construidos a partir del gesto del dedo. Cero cambios en el camino
+ *   de ratón; el mostrador de escritorio se comporta exactamente igual
+ *   que en v1.1.86.
+ *     · _fireSyntheticMouse(target, tipo, x, y) — el mousedown se
+ *       despacha sobre el elemento REAL tocado (para que los guardias
+ *       e.target.closest(...) sigan funcionando) y el mousemove/mouseup
+ *       sobre `document` con bubbles:true, que alcanza tanto a los
+ *       listeners de document (_bindFaseDrag) como a los de window
+ *       (_bindResizeExt, _bindBlockDrag), porque document propaga a
+ *       window.
+ *     · _bindTouchLongPressDrag(el, opts) — PULSACIÓN LARGA de 450ms
+ *       quieto y luego arrastrar. Se usa en los bloques de cita y en las
+ *       columnas libres. No es capricho: si el arrastre arrancase al
+ *       primer movimiento, el dedo apoyado sobre una cita o una columna
+ *       ya no podría hacer scroll vertical del calendario, y con la
+ *       agenda llena eso es casi toda la pantalla. Con pulsación larga
+ *       conviven los tres gestos: toque corto abre la cita, arrastre
+ *       directo hace scroll, mantener + arrastrar mueve.
+ *       Antes de armarse NO se llama a preventDefault, de modo que el
+ *       scroll y el click nativo siguen intactos. Al armar, clase
+ *       `is-touch-armed` (+ vibración breve donde exista) para que el
+ *       operador vea que el bloque ya está enganchado.
+ *     · _bindTouchImmediateDrag(el) — arrastre inmediato para las dos
+ *       asas de resize, que son objetivos deliberados y nunca superficie
+ *       de scroll.
+ *
+ *   CSS — primera media query del archivo, `@media (hover: none)`, que
+ *   por definición no aplica en escritorio con ratón:
+ *     · .ks-appt-timeadj (el 🕑 que ajusta la hora de la fase SIN
+ *       arrastrar) vivía con opacity:0 y solo se revelaba en :hover →
+ *       era invisible con el dedo. Ahora es permanente y de 20×20px.
+ *     · .ks-appt-resize conserva su aspecto (28×4px) pero gana zona de
+ *       impacto por pseudo-elemento (~56px de ancho) y touch-action:none.
+ *     · -webkit-touch-callout / user-select desactivados en cita y
+ *       columna, para que iOS no abra el menú de selección al mantener.
+ *
+ *   NO se toca: page code, backends, contrato de mensajes ('mover-fase',
+ *   'redimensionar-fase', 'extender-reserva', 'crearBloqueo'), ni ningún
+ *   flujo de negocio.
+ *
+ * v1.1.86  ·  TIENDA — CIF/DNI antes de cobrar
+ *
+ * v1.1.86 (4 ago 2026) — El CIF/DNI se pide en el paso de cliente, antes
+ *   de la venta, que es cuando el cliente está delante del mostrador. En
+ *   v1.1.85 solo aparecía después de cobrar, dentro del formulario de
+ *   factura. Ahora el paso de cliente se muestra siempre —también con un
+ *   cliente ya cargado en el aside, en cuyo caso los datos personales
+ *   salen rellenos y bloqueados y solo queda añadir los fiscales— y lo
+ *   capturado se arrastra al formulario de factura ya relleno.
+ *   Dejarlo vacío sigue permitiendo emitir ticket y convertirlo después.
+ *
+ * v1.1.85  ·  TIENDA con ticket / factura y CIF-DNI
+ *
+ * v1.1.85 (4 ago 2026) — La venta de TIENDA ya emite documento KAMISUITE.
+ *   Al registrar la venta el modal deja de cerrarse: muestra el resultado
+ *   y ofrece 🧾 Ticket (factura simplificada) o 📄 Factura completa. La
+ *   factura pide CIF/DNI y razón social, que se guardan en la ficha del
+ *   cliente para las próximas veces. Si ya se emitió ticket, aparece
+ *   "Convertir a factura" y el backend la emite como rectificativa, misma
+ *   mecánica que en el modal de cita.
+ *   El documento se ancla al cobro por `sourceKey` (el orderId de la
+ *   venta, que es el bookingId de su fila en PaymentReservations), no a
+ *   una reserva. Requiere facturacionSalonLogic v1.0.4, los campos
+ *   sourceType y sourceKey en Invoices, y page code v1.0.38.
+ *
+ * v1.1.84  ·  Botón TIENDA — venta de productos sin cita
+ *
+ * v1.1.84 (4 ago 2026) — TIENDA. Botón nuevo en la barra superior, junto a
+ *   FICHA TÉCNICA, para vender productos a quien entra sin cita. Abre el
+ *   MISMO modal de venta que ya existe dentro de la cita: buscador,
+ *   carrito, variantes, métodos de pago y el flujo MISSING_VARIANT. La
+ *   única diferencia es que no viaja packId, así que la venta queda
+ *   registrada contra el contacto y sin cita asociada.
+ *
+ *   Cliente: usa el que esté cargado en el aside. Si no hay ninguno, o el
+ *   que hay es provisional, pide nombre + teléfono o email y da de alta el
+ *   contacto por el circuito existente ('crearCliente'), encadenando
+ *   después la venta. NO hay venta anónima: venderProductosDesdeAgenda
+ *   aborta sin contactId porque genera un pedido real de tienda.
+ *
+ *   Gated con _puede('cobrar'), igual criterio que el resto de acciones
+ *   con dinero. Cero backend nuevo y cero cambios en el page code.
+ *
+ * v1.1.83  ·  Variantes al añadir complemento
+ *
+ * v1.1.83 (4 ago 2026) — El modal "⛓ Complemento" del modal de cita ya
+ *   permite elegir VARIANTE. Antes solo mandaba el setupUid y un
+ *   complemento con variantes (Peinado M/L/XL) entraba siempre a precio y
+ *   duración base. Mismo patrón que v1.1.81 hizo con "+ Servicio
+ *   adicional". El botón Añadir se rehabilita si el backend da error.
+ *   Requiere backend v1.0.44 y page code v1.0.37.
+ *
+ * v1.1.82  ·  Panel sin "Complementos de fases"
+ *
+ * v1.1.82 (4 ago 2026) — El grupo "Complementos de fases" deja de listarse
+ *   en la columna de servicios. Son piezas que el motor materializa dentro
+ *   de la cascada de otro servicio, y verlas sueltas entre los principales
+ *   confunde. Siguen accesibles en la pestaña "Complementos" del filtro de
+ *   rol. Solo cambia _buildGroups; el catálogo y el backend no se tocan.
+ *
+ * v1.1.81  ·  Armado múltiple, cantidad y variantes al añadir
+ *
+ * v1.1.81 (4 ago 2026) — ARMADO MÚLTIPLE + CANTIDAD + VARIANTES AL AÑADIR.
+ *   Tres cosas que ahorran pasos en el mostrador, sobre una única cita.
+ *
+ *   1) CANTIDAD en el popup de servicio. Caso real: una madre trae dos
+ *      niños al mismo corte. Antes había que repetir el proceso entero
+ *      (armar, clicar calendario, y otra vez). Ahora se elige cantidad 2
+ *      y los dos cortes se encadenan uno detrás del otro según duración.
+ *
+ *   2) VARIOS SERVICIOS armados antes de pintar. El popup, si ya hay algo
+ *      armado, cambia el botón a "＋ Añadir a la cita". La cabecera del
+ *      calendario muestra la lista completa y el orden de colocación.
+ *      Al encadenar líneas NO se ofrecen complementos opcionales ni
+ *      grupos exclusivos (premisa de diseño: elegirlos por línea haría el
+ *      popup inmanejable). Sí se mantienen las fases OBLIGATORIAS con
+ *      variantes (CASO B), porque sin esa elección el motor no puede
+ *      construir el servicio.
+ *
+ *   3) Selector "Mismo profesional" / "Elegir por servicio" en la
+ *      cabecera, visible solo cuando hay más de una línea. Con "mismo
+ *      profesional" un único clic coloca toda la cita. Con "elegir por
+ *      servicio" el operador clica una columna y hora por cada servicio.
+ *
+ *   ARQUITECTURA — es UNA SOLA CITA, no varias:
+ *     · Línea 1  → 'crearReserva'    (crearPackReserva) crea la fila.
+ *     · Líneas 2+ → 'agregar-servicio' (agregarServicioReserva) se suman a
+ *       ESA fila, exactamente igual que el botón "+ Servicio adicional"
+ *       del modal de cita, que es como se viene haciendo desde la V1.
+ *   Resultado: un total, un cobro unificado y UN SOLO WhatsApp/email al
+ *   cliente — la centralita de comunicaciones solo la dispara
+ *   crearPackReserva; agregarServicioReserva no notifica nada.
+ *   En modo "elegir por servicio", tras añadir la línea sus fases se
+ *   reubican en la columna elegida con el contrato existente 'mover-fase',
+ *   SIEMPRE de una en una: moverFase reescribe la fila entera y dos
+ *   movimientos en paralelo se pisarían.
+ *
+ *   4) "+ SERVICIO ADICIONAL" DEL MODAL DE CITA — ahora con elección de
+ *      VARIANTE. Antes solo viajaba el setupUid: un servicio con variantes
+ *      (Corte Mujer M/L/XL) se añadía siempre a precio y duración BASE, y
+ *      un servicio con fases obligatorias con variantes (Botox →
+ *      Planchado M/L/XL) fallaba con "Falta elegir variante de: …" sin
+ *      forma de añadirlo. Corregido en las tres capas.
+ *      Además, el botón "Añadir" vuelve a habilitarse si el backend
+ *      devuelve error (antes había que cerrar el modal para reintentar).
+ *
+ *   REQUIERE: backend recepcionProLogic v1.0.43 y page code v1.0.36.
+ *   Desplegar el backend y el page code ANTES que este widget: sin ellos,
+ *   varianteSel y complementosSetupUid se ignoran y las líneas con
+ *   variantes entrarían a precio base.
+ *
+ *   NO se toca: cobro, descuentos, canje de bonos, facturación, cierre,
+ *   arqueo, ALMACÉN, ESPECIALES, ficha técnica, bloqueos, drag&drop de
+ *   fases, login PIN, ni el flujo de una sola línea (idéntico a v1.1.80).
+ *
+ * v1.1.80  ·  Informe del día — detalle de ESPECIALES vendidos
+ *
+ * v1.1.80 (4 ago 2026) — CIERRE FINANCIERO: nueva sección "🎟️ Especiales
+ *   vendidos hoy" con el detalle de cada venta manual de Bono / Tarjeta
+ *   PRIME / Tarjeta promocional (concepto + cliente + método + importe y
+ *   línea de total). Hasta ahora esas ventas solo se veían agregadas como
+ *   "ESPECIALES · N cobros" en "Cobrado por staff", sin decir qué se había
+ *   vendido — un bono podía pasarse por alto leyendo el informe.
+ *   Se alimenta de cierre.especiales / cierre.especialesTotal que devuelve
+ *   el backend cierreLogicExtendido v1.1.5. Si el backend no está
+ *   desplegado, los campos llegan undefined y la sección simplemente no se
+ *   pinta (cero regresión).
+ *   También se añade el mismo bloque al texto del botón 📋 COPIAR del
+ *   cierre financiero (_cierreBloqueATexto('fin')).
+ *   NO se toca: rendimiento productivo, métodos de pago, IVA, cobrado por
+ *   staff, productos, externos, arqueo, ESPECIALES (venta), ALMACÉN, ficha
+ *   técnica, calendario, cobro, login PIN ni ningún otro flujo.
+ *
+ * v1.1.79  ·  FICHA TÉCNICA — fix del cliente precargado
+ *
+ * v1.1.79 (3 ago 2026) — FIX: el popup se reabría siempre con el cliente
+ *   de la última CITA abierta, ignorando el que el operador acabara de
+ *   seleccionar en el aside. Seleccionar cliente en el aside escribe en
+ *   this._cliente y no pasa por _openModal, así que _ftUltimoCliente no
+ *   se actualizaba y el popup quedaba clavado en el cliente anterior.
+ *
+ *   Orden de precarga ahora:
+ *     1) this._cliente  — el del aside. Es lo que el operador tiene
+ *        delante en el paso 1 del asistente; manda sobre lo demás.
+ *     2) this._ftUltimoCliente — última cita abierta en el calendario.
+ *     3) ninguno → el popup abre con el buscador vacío.
+ *
+ *   Solo cambia _openFichaTecnica(). Backend y page code sin tocar.
+ *
+ * v1.1.78  ·  Popup FICHA TÉCNICA — historial de color destacado
+ *
+ * v1.1.78 (3 ago 2026) — FICHA TÉCNICA: las fórmulas suben a su propio
+ *   bloque, delante del historial de visitas. En v1.1.77 iban dentro de
+ *   cada visita, y como solo el 15,7% de los tickets tiene fórmula
+ *   anotada, obligaba a rebuscar por el historial para encontrarlas.
+ *   Mismo criterio que el widget MEMORIA: Historial de color primero,
+ *   todas las visitas después. Se elimina el toggle 'Solo con fórmula',
+ *   que deja de tener sentido con los dos bloques separados.
+ *   Solo cambia _renderFt(). Backend y page code sin tocar.
+ *
+ * v1.1.77  ·  Popup FICHA TÉCNICA (histórico de color)
+ *
+ * v1.1.77 (3 ago 2026) — POPUP FICHA TÉCNICA en la barra superior, junto
+ *   a ALMACÉN y ESPECIALES. Consulta el histórico de color del sistema
+ *   anterior (2.019 tickets de 2026, 318 fórmulas técnicas) sin salir de
+ *   Recepción. Requiere page code v1.0.35 y memoriaLegacyLogic v1.0.3.
+ *
+ *   ⚠️ SIN DATOS ECONÓMICOS. Es la razón de existir de este popup: los
+ *   informes con dinero son de gerencia; la sala necesita la técnica.
+ *   El filtro está en el BACKEND (getFichaTecnicaCliente no envía
+ *   importes). Aquí no hay nada que ocultar porque nada llega.
+ *
+ *   Cliente precargado: _openModal guarda el último cliente cuya cita se
+ *   abrió (_ftUltimoCliente). Al pulsar el botón, si hay uno, se carga
+ *   directo; el buscador sigue disponible para cambiar. Se guarda al
+ *   abrir la cita, no al cerrarla, porque el modal tapa la barra y el
+ *   flujo real es: abrir cita → cerrar → consultar ficha.
+ *
+ *   Cambio ADITIVO y aislado: clases .ks-fichatec y .ft-*, mensajes
+ *   propios (ftBuscarCliente/getFichaTecnica → ftClientesEncontrados/
+ *   fichaTecnicaData). No se toca el calendario, el cobro, el arqueo,
+ *   el cierre, ESPECIALES ni el ALMACÉN.
+ *
+ * v1.1.76  ·  Popup ALMACÉN (papelera y sacar de almacén)
+ * FECHA: 1 de agosto de 2026 (v1.1.75: 2 de agosto de 2026)
  * ---------------------------------------------------------------------
+ * v1.1.76 (2 ago 2026) — POPUP ALMACÉN en la barra superior, junto a
+ *   ESPECIALES. Botón turquesa "ALMACÉN" que abre un modal con los
+ *   productos de uso en salón que tienen existencias, buscador y filtro
+ *   por categoría, y DOS acciones por producto:
+ *     🗑️ TIRAR   → bote terminado. El almacén descuenta uno cerrado y
+ *                  abre el siguiente (stockLogic.tirarPapelera).
+ *     📤 SACAR   → coger un bote del almacén para empezarlo, sin tirar
+ *                  ninguno (movimiento APERTURA · APERTURA_MANUAL).
+ *   Los contadores se actualizan en local con lo que devuelve el
+ *   backend: sin recargar la agenda ni releer la lista entera.
+ *   Ambas acciones están permitidas a CUALQUIER nivel de acceso: no son
+ *   administración, son registrar lo que se acaba de hacer físicamente.
+ *   El movimiento se firma con _empleadoActivo (mismo mecanismo que
+ *   _logEvent); sin capa de login, se graba sin firma.
+ *   Cambio ADITIVO y aislado: clases .ks-almacen y .alm-*, mensajes
+ *   propios. NO se toca ESPECIALES, ni el calendario, ni el cobro, ni
+ *   el arqueo. Requiere page code v1.0.34 y stockLogic v1.0.2.
+ * v1.1.75 (2 ago 2026) — DESCUENTO MANUAL en el modal ESPECIALES (venta
+ *   manual de PRIME/Bono/Tarjeta). Reutiliza LITERAL el patrón %/€ del
+ *   cobro normal (misma card .ks-disc-*, misma lógica que _calcDescuento,
+ *   mismo token "🏷️ Descuento -X% (-Y€)"). La card solo se pinta cuando
+ *   hay un producto elegido con precio > 0. Aplica sobre _espPrecioActual()
+ *   (vale igual en las tres pestañas). El botón "Emitir y cobrar" muestra
+ *   el NETO. En _espEmitir, si hay descuento, se añaden al payload
+ *   `importeNeto` (neto ya calculado) + `descripcionExtra` (token). El
+ *   backend especialesVentaLogic v1.0.1 los graba en importeTotal (cierre)
+ *   y paidPrice (Observatorio). Con 100% (o € = precio) el neto queda a 0 =
+ *   "regalar". Cambio aislado a la zona ESPECIALES; nada más se toca.
+ * v1.1.74 (1 ago 2026) — Evidencia persistente "✓ Arqueo guardado"
+ *   debajo del botón Guardar arqueo. Antes solo había un toast fugaz y
+ *   el botón quedaba activo, sin señal de que el guardado había ido
+ *   bien. Ahora, cuando el registro del día está en status 'saved', se
+ *   pinta bajo el botón "✓ Arqueo guardado · dif X€" en verde. Como se
+ *   basa en el estado del registro, sobrevive al refresco (no es
+ *   fugaz). El botón sigue activo a propósito (permite re-guardar tras
+ *   cambiar el conteo). Cambio aislado a _renderCajaBody.
+ * v1.1.73 (1 ago 2026) — FONDO INICIAL arrastra el cash de ayer +
+ *   "Forzar fondo inicial". El "Fondo inicial" del arqueo ya no es un
+ *   input: es texto que muestra el fondo del día, que el backend
+ *   (v1.1.2) rellena arrastrando el efectivo contado del cierre
+ *   anterior. Debajo, una fila "Forzar fondo inicial" con input + botón
+ *   "Forzar" permite sobrescribir ese valor cuando el arranque real es
+ *   distinto (el placeholder muestra el fondo actual). Con el campo
+ *   vacío no fuerza nada. Mensaje/handler 'caja-set-fondo' sin cambios;
+ *   solo cambia el texto (Forzar) y el toast.
+ * v1.1.72 (1 ago 2026) — FONDO INICIAL editable directamente en el
+ *   cuadro del arqueo (🏦). El "Fondo inicial" deja de ser texto fijo:
+ *   si la caja no está cerrada, es un input con botón "Guardar" que
+ *   escribe openingBalance del día (mensaje 'caja-set-fondo' → backend
+ *   setOpeningBalance v1.1.1, exista o no la caja). El "Efectivo
+ *   esperado" se recalcula al instante. Sin campos nuevos en el CMS,
+ *   sin depender de qué día sea ni de ningún toggle. Cambio aislado a
+ *   la línea del Fondo inicial en _renderCajaBody + 1 handler de
+ *   respuesta. Todo lo demás intacto.
+ * v1.1.71 (1 ago 2026) — APERTURA DE CAJA (fondo inicial del día). El
+ *   arqueo es un módulo OPCIONAL: cuando el salón tiene SalonConfig.
+ *   arqueoActivo=true, al abrir Recepción PRO por la mañana aparece un
+ *   modal profesional de apertura con el fondo inicial SUGERIDO ya
+ *   pre-rellenado (fondo fijo del salón, o el efectivo contado al cerrar
+ *   ayer, o 0 si no hay historial). El operador confirma en un click o
+ *   pulsa "Saltar hoy". El flag arqueoActivo y la sugerencia se calculan
+ *   en el backend/page code (check-apertura-caja → caja-fondo-sugerido);
+ *   el widget solo dispara el check una vez para HOY y reacciona.
+ *   · Estado nuevo: _aperturaChequeada (¿ya se pidió el check?),
+ *     _aperturaSaltadaFecha (fecha para la que se saltó la apertura),
+ *     _aperturaFondo (importe editable del modal).
+ *   · connectedCallback dispara _maybeCheckApertura() — solo si la fecha
+ *     mostrada es HOY (todayISO). Navegar a otro día no re-dispara.
+ *   · Handlers nuevos en _handleResponse: 'caja-fondo-sugerido' (abre el
+ *     modal, con guards de HOY / no-saltado / sin otro modal abierto),
+ *     'caja-abierta' (toast + refresca el arqueo si está abierto),
+ *     'apertura-estado' (informativo, no pinta nada).
+ *   · Modal _openAperturaModal reutiliza las clases del modal existente
+ *     (ks-modal-scrim, ks-modal, ks-disc-row, ks-pay pay-efectivo…). Sin
+ *     CSS nuevo. No cierra al clicar fuera (acto consciente): solo
+ *     "Saltar hoy" o "Confirmar apertura". Firma automática con el
+ *     empleado logueado la resuelve el page code (recordedBy).
+ *   · FUERA DE ALCANCE (sesión futura si se quiere): botón manual
+ *     "Registrar fondo inicial" DENTRO del arqueo para un registro ya
+ *     creado con fondo 0 — requiere una función backend que ACTUALICE
+ *     openingBalance de un registro existente (abrirCaja solo crea). No
+ *     se toca ahora para mantener el cambio quirúrgico. El workaround
+ *     de apuntar el fondo como "+ Entrada" sigue disponible.
+ *   · NO se toca: arqueo/cierre existente, ESPECIALES, cobro, drag&drop,
+ *     login PIN, calendario, banner promo, ni ningún flujo de negocio.
+ *     Solo se AÑADE el flujo de apertura (estado + 1 disparo + 3
+ *     handlers + 1 modal), todo add-only.
+ * v1.1.70 (31 jul 2026) — ESPECIALES · buen gusto en las respuestas. Los
+ *   avisos del modal (bloqueo por no-PRIME, bono ya activo, PRIME ya activa,
+ *   éxito) dejan de pintarse como toast negro al pie y se muestran DENTRO del
+ *   modal, con tono cálido y una salida útil (el bloqueo por PRIME ofrece un
+ *   botón "Dar de alta PRIME" que salta a esa pestaña). Validaciones de campo
+ *   (nombre, destinatario del regalo) con resaltado suave sin perder lo escrito.
+ * v1.1.69 (31 jul 2026) — ESPECIALES. El botón AKIRA (zombi) pasa a ESPECIALES
+ *   y abre un modal de venta manual de los tres productos comerciales; se
+ *   elimina el botón Inicio (zombi). El modal reutiliza la búsqueda de clientes
+ *   (mensajes propios espBuscarCliente/espClientesEncontrados), tres pestañas
+ *   PRIME/Bono/Tarjeta pobladas por getEspecialesData, método de pago y emisión
+ *   (emitirBono/emitirPrime/emitirTarjeta). Sin selector de variante: ningún
+ *   servicio con bono de KALÓNICE tiene variantes.
+ * v1.1.68 (30 jul 2026) — FIX del plegado de servicios de 1 min (widget-only).
+ *   El plegado (v1.1.67) se anclaba a la PRIMERA fase ocupante de la cascada,
+ *   no a la principal. Si la primera fase era corta (p.ej. "Lavado previo" de
+ *   15 min, por debajo de la altura mínima de la línea plegada) la leyenda no
+ *   cabía y desaparecía (ni plegada en un bloque ni pintada como fase suelta).
+ *   Se veía bien en KALONICE solo porque allí la primera fase (Bigudis) era
+ *   larga. Ahora el plegado se ancla a la fase PRINCIPAL, identificada por su
+ *   tipo — 'APLICACION' (complejo) o 'SERVICIO' (simple); los complementos son
+ *   'COMPLEMENTO'/'INCLUIDA' — que es la fase larga y visible. Fallbacks: por
+ *   label del principal (1er item de serviciosDetail) y, en último caso, la
+ *   primera fase normal. Nada más cambia.
+ * ---------------------------------------------------------------------
+ * v1.1.67 (29 jul 2026) — Servicios de 1 min legibles (widget-only). Las
+ *   fases ocupantes de ≤1 min (marcadores tipo tamaño de pelo) ya NO se
+ *   pintan como bloque propio ilegible: su leyenda se pliega como una línea
+ *   nueva en la cartela de la fase PRINCIPAL, entre el cliente y el rango, y
+ *   su minuto se suma al rango mostrado (p.ej. 10:15-10:44 → 10:15-10:45).
+ *   Solo cambia lo VISUAL: la fase sigue intacta en datos, ledger y CRM
+ *   (serviciosDetail, cobro, ficha). Se pliega en `_apptHTML` (clasifica
+ *   tiny vs normal, ancla en firstIdxGlobal) y se pinta en `_apptBloqueHTML`
+ *   (nueva línea .ks-appt-fold + rango extendido `rangoEndMin`). Caso borde
+ *   cubierto: si TODAS las fases son de 1 min (servicio suelto), se pinta
+ *   normal (no hay principal donde plegar). El tooltip de v1.1.66 se
+ *   mantiene (ayuda con otros bloques cortos), pero ya no hace falta para
+ *   los marcadores de tamaño.
+ * ---------------------------------------------------------------------
+ * v1.1.66 (29 jul 2026) — Dos arreglos (widget-only):
+ *   A) FIX "Catálogo Cargando…" colgado. Cuando Wix desconecta+reconecta el
+ *      custom element (2º connectedCallback), _renderShell repintaba el
+ *      placeholder estático "Cargando catálogo…" pero el catálogo ya había
+ *      llegado (_loading=false) y el retry no re-disparaba → el panel se
+ *      quedaba colgado hasta tocar un filtro. Ahora, tras _renderShell, se
+ *      repintan panel y agenda con lo que ya haya en memoria (en el 1er
+ *      montaje es inocuo: muestra "Cargando…" normal / no-op sin staff).
+ *   B) Tooltip nativo en el bloque de cita (atributo title con
+ *      "servicio · hora · cliente"). Permite leer la cartela de servicios
+ *      muy cortos (p.ej. variantes de tamaño de pelo de 1 min, que ni a
+ *      máximo zoom caben en altura) sin falsear la duración ni desplazar
+ *      nada.
+ * ---------------------------------------------------------------------
+ * v1.1.65 (29 jul 2026) — Extender cualquier servicio de la cascada, no
+ *   solo el último. El asa de resize (borde inferior del bloque) ahora
+ *   aparece en TODAS las fases ocupantes (antes solo en la última). Al
+ *   arrastrarla se ajusta la DURACIÓN de esa fase; el backend nuevo
+ *   redimensionarFase (recepcionProLogic v1.0.39, calcado de moverFase)
+ *   desplaza las fases posteriores para mantener la secuencia. Envía el
+ *   mensaje nuevo 'redimensionar-fase' { reservaId, faseIndex, nuevaDur }
+ *   (page code v1.0.30, handler handleRedimensionarFase). El preview
+ *   muestra el bloque creciendo con su nueva duración y horario.
+ *   · COMPAT: el camino legacy de extensión (extensionMin, buffer rayado
+ *     tras la última fase) se conserva íntegro para reservas SIN fases
+ *     (faseIndex = -1): esas siguen usando 'extender-reserva'. La rama se
+ *     decide en _bindResizeExt por data-fase-idx. El render legacy
+ *     (_extensionHTML) y quitarExtension no se tocan.
+ *   · Nueva respuesta 'fase-redimensionada' en _handleResponse. Gates
+ *     intactos: PAGADO no muestra asa (no redimensionable).
+ * ---------------------------------------------------------------------
+ * v1.1.64 (29 jul 2026) — Ajustes de agenda operativa (widget-only, CERO
+ *   backend / CERO page code / CERO URL / CERO IDs de colección):
+ *   1) GRID 15': default de _settings.interval 30 → 15 (3 inits + radio
+ *      checked). El intervalo ya se soportaba; ahora es el baseline. Los
+ *      ajustes guardados (CalendarViewSettings) mandan sobre el default.
+ *   2) LÍNEAS +DEFINIDAS: solo las variables del grid --ks-line2
+ *      (0.948→0.905) y --ks-line (0.905→0.865). Nada más se toca; el resto
+ *      del CSS hereda estas dos.
+ *   3) POPUP CONFIRMAR HORA antes de pintar: el click en columna (con
+ *      servicio armado) ya no pinta directo; abre _openHoraPicker precargado
+ *      con la hora del click. Selector grande HH:MM (1 min) + ±5/±15 +
+ *      Confirmar → recién ahí _colocarReserva(staffId, hhmm).
+ *   4) ZOOM: slider #sliderSpacing 28–84 → 24–160 (más rango de ampliado).
+ *      Las citas no se descuadran: el render usa ppm = rowPx/60 dinámico.
+ *   5) MOVER EN VIVO: el ghost del drag de fase muestra la hora destino
+ *      HH:MM en vivo; snap del movimiento desacoplado del grid a 5 min.
+ *   6) CARD CON TIEMPOS: cada línea de servicio del modal de cita muestra su
+ *      duración (minutos ocupados de las fases ocupantes; fallback
+ *      duracionTotal si es 1 sola línea). Aditivo, no toca totales.
+ *   7) SERVICIOS 1 MIN: "a medida" min 5→1 / step 5→1 / validación <5→<1;
+ *      suelo visual del bloque 26→10px (y extensión 22→10). La duración
+ *      guardada ya era exacta; solo se elimina el condicionamiento visual.
+ *   8) REAJUSTAR FASE: icono 🕑 (aparece al pasar el ratón sobre el bloque,
+ *      solo en fases movibles = no pagadas) abre el mismo _openHoraPicker en
+ *      modo 'fase' → envía el 'mover-fase' existente (mismo reservaId,
+ *      faseIndex, MISMA fecha, MISMO staff). Reutiliza backend moverFase.
+ *   Nuevo método _openHoraPicker (modos 'colocar'/'fase'). Nuevas clases CSS
+ *   .ks-horapick*, .ks-appt-timeadj, .ks-item-dur, .g-time. Gates existentes
+ *   respetados (PAGADO/_puede) exactamente como el drag/colocar previos.
+ * ---------------------------------------------------------------------
+ * v1.1.63 (6 jul 2026):
+ *   · COPIAR el informe del día al portapapeles, un botón por bloque:
+ *     "📋 COPIAR" en el título de Rendimiento productivo y de Cierre
+ *     financiero. Copia texto plano estructurado (patrón copyText del
+ *     CRM Móvil: navigator.clipboard.writeText + fallback execCommand,
+ *     textarea anclado al Shadow DOM), listo para pegar en WhatsApp o
+ *     documento. Cabecera: bloque productivo → brandName; financiero →
+ *     legalName. Ambos nombres llegan del page code v1.0.29 (mensaje
+ *     'salonNombres' → backend getSalonConfig, que NO se toca).
+ *     Nuevos helpers _copyText / _copyFallback / _cierreBloqueATexto.
+ *     Los botones se cablean tras cada render del informe. CSS nuevo
+ *     .cierre-copybtn. CERO backend nuevo, CERO URL, IDs existentes
+ *     intactos. Chip de versión visible (v1.1.8) sin tocar.
+ *
+ * v1.1.62 (6 jul 2026):
+ *   · NIVELES DE ACCESO en Recepción PRO (capa de front, widget only).
+ *     Nuevo helper _puede(accion) que gobierna la UI según
+ *     _empleadoActivo.accessLevel (StaffConfig · Number 1-4), que ya llega
+ *     desde validateLoginPin (backend recepcionAccessLogic v1.0.4, sin
+ *     tocar). Solo actúa con la capa de login activa (this._usersActivation
+ *     ← SalonConfig.usersActivation). Sin login o sin empleado → acceso
+ *     total (comportamiento previo idéntico). Sin nivel válido → N4.
+ *       · N1 Administrador: todo.
+ *       · N2 Encargado: todo salvo informe/cierre de días anteriores
+ *         (solo el día en curso). Arqueo, ajustes y bloqueos permitidos.
+ *       · N3 Recepción: todas las funciones sobre citas (crear, cobrar,
+ *         cancelar, reprogramar, añadir/quitar). Sin arqueo, cierre,
+ *         ajustes ni bloqueos.
+ *       · N4 Básico: visualiza el calendario y abre citas en modo lectura.
+ *         No crea, no edita, no cobra, no bloquea. Botones bloqueados
+ *         responden "No tienes permiso para esta acción".
+ *     Intercepciones (7): btnArqueo, btnCierre, btnAjustes (topbar),
+ *     _colocarReserva (crear), _bindBlockDrag mousedown (bloqueo por
+ *     arrastre), cobro .ks-pay[data-m] + acciones de edición del modal
+ *     (if !paid → editarCita, con rama de aviso para N4).
+ *     CERO backend, CERO HTML/markup nuevo, CERO IDs cambiados, CERO URLs.
+ *     Chip de versión visible (v1.1.8) sin tocar.
+ *
+ * v1.1.61 (5 jul 2026):
+ *   · Nueva sección "Servicios externos" en el informe de cierre
+ *     (_renderCierre), alimentada por data.externosV2 que produce el
+ *     backend dedicado cierreExternosLogic.obtenerDatosCierreExternos
+ *     (lee PagoreservasExternos + cruza ExternalServices). Muestra
+ *     desglose por servicio, Venta bruta externa y Comisión del salón.
+ *     Render condicionado a externosV2.citas > 0. El color del título y
+ *     de la comisión se resuelve con _staffColor() del empleado que
+ *     tiene isExternal:true en this._staff (mismo patrón que el render
+ *     del calendario) — sin color hardcodeado. Cambio ADITIVO: no toca
+ *     la sección previa "Comisiones externos" ni ninguna otra parte del
+ *     render.
+ * ---------------------------------------------------------------------
+ * v1.1.60 (4 jul 2026):
+ *   · 🧹 LIMPIEZA del popup Armar servicio. Se ELIMINAN del render dos
+ *     bloques que introducían ruido visual sin aportar valor operativo
+ *     al estilista:
+ *       · El párrafo con la descripción larga del servicio
+ *         (`s.descripcion`, en `.ks-detail-note-simple` bajo la cabecera).
+ *       · El bloque "CASCADA DE FASES" (`cascadeHTML`), compuesto por
+ *         segmentos horizontales proporcionales al `mapeoFases`, la
+ *         leyenda "Ocupado / PROCESO libre" y la nota final.
+ *     Ambos vienen de v1.1.44 y anteriores; nunca llegaron a ser útiles
+ *     en producción (la representación era estática, no reflejaba la
+ *     selección real del estilista y confundía más que aclaraba).
+ *     Cambio quirúrgico: solo se retiran las dos interpolaciones del
+ *     `pop.innerHTML` en `_renderDetail`. Las funciones auxiliares
+ *     `_resolverFases` y el CSS `.ks-cascade-*` se dejan intactas por
+ *     si se retoma en el futuro una representación distinta; no se
+ *     ejecutan al no invocarlas.
+ *   · Cero cambios en: complementos, grupos exclusivos (v1.1.59),
+ *     variantes del principal, cabecera, botones, comportamiento del
+ *     armado, cascada visual del calendario, resto del widget.
+ *
+ * v1.1.59 (4 jul 2026):
+ *   · 🔗 GRUPO EXCLUSIVO en el popup del servicio.
+ *     Backend pareja: recepcionProLogic v1.0.36 (expone `mapeoFases`).
+ *
+ *     Cuando el `mapeoFases` del servicio armado contiene items
+ *     tipo:'exclusivo' (grupo exclusivo definido con el chip rojo del
+ *     editor v1.14.0+), el popover de detalle pinta un bloque nuevo
+ *     bajo "Complementos" titulado "Grupos exclusivos" con una sección
+ *     por grupo. Cada sección muestra el label del grupo ("Tratamiento")
+ *     y las opciones como botones radio-like: primero "No añadir", luego
+ *     una opción por cada ref válido con label/price/duration leídos de
+ *     `this._porSetupUid` (catálogo vivo, cero hardcoding).
+ *
+ *     Estado guardado en `this._exclusivosSel[groupKey] = uid del servicio
+ *     elegido`; ausencia del key = "No añadir".
+ *
+ *     `_armarServicio` recorre los items tipo:'exclusivo' del mapeoFases
+ *     y, por cada elección guardada, empuja al array `complementosSetupUid`
+ *     un objeto { uid, varianteId, varianteLabel, price, duration } — mismo
+ *     shape que las variantes de complemento (patrón v1.1.44). El motor
+ *     `construirFasesPack` v1.0.34 detecta el uid dentro de `f.refs` y
+ *     materializa el servicio en la posición del chip rojo.
+ *
+ *     `_openDetail` resetea `this._exclusivosSel = {}` al abrir un servicio.
+ *
+ *   · Cero cambios en: cliente, calendario, sesiones, cobro, cierre,
+ *     mensajes, staff, layout general, cascada visual, factura, arqueo,
+ *     complementos con/sin variantes existentes.
+ *
  * v1.1.58 (28 jun 2026):
  *   · 🐛 FIX: el botón "📄 Convertir a factura" del badge del ticket
  *     introducido en v1.1.57 no abría el formulario inline. Click
@@ -997,7 +1846,7 @@
 (function () {
   'use strict';
 
-  const TAG = '[RecepcionProCMS-Widget v1.1.58]';
+  const TAG = '[RecepcionProCMS-Widget v1.1.103]';
 
   // ─── helpers ───
   function esc(s) {
@@ -1014,6 +1863,25 @@
 
   const CLASE_LABEL = { simple_unico: 'Simple', simple_variantes: 'Variantes', complejo_fases: 'Cascada', complejo_proceso: 'Cascada' };
   const ROLE_SHORT = { principal: 'P', complemento: 'C', ambos: 'P·C' };
+
+  // v1.1.81 — tope de repeticiones de una misma línea del armado. 10 es
+  // holgado para el caso real (familias) y evita que un dedo pegado al ＋
+  // genere una cadena interminable de llamadas al backend.
+  const CANT_MAX_LINEA = 10;
+
+  // v1.1.82 — Grupo del catálogo que NO se lista en la columna de servicios
+  // salvo que el filtro de rol sea explícitamente "Complementos". Son piezas
+  // que el motor materializa dentro de la cascada de otro servicio; verlas
+  // sueltas junto a los principales confunde al operador.
+  // Se compara normalizado (sin guiones, sin acentos, sin mayúsculas) para
+  // que dé igual cómo esté escrito el `group` en ServiceCatalog.
+  const GRUPO_OCULTO_PANEL = 'complementos de fases';
+  function normGrupo(g) {
+    return String(g || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[-_]+/g, ' ').replace(/\s+/g, ' ')
+      .trim().toLowerCase();
+  }
 
   // calendario
   const CAL_START = 9, CAL_END = 21, SLOT_MIN = 30;
@@ -1083,8 +1951,8 @@
   --ks-ink:    oklch(0.29 0.012 265);
   --ks-ink2:   oklch(0.47 0.012 265);
   --ks-ink3:   oklch(0.63 0.010 265);
-  --ks-line:   oklch(0.905 0.004 265);
-  --ks-line2:  oklch(0.948 0.004 265);
+  --ks-line:   oklch(0.865 0.005 265);
+  --ks-line2:  oklch(0.905 0.005 265);
   --ks-accent: #c9a44a;
   --ks-accent-ink: oklch(0.46 0.072 80);
   --ks-accent-soft: oklch(0.96 0.03 86);
@@ -1118,11 +1986,155 @@ button { font-family: inherit; cursor: pointer; }
 }
 .ks-brandhint { color: var(--ks-ink3); font-size: 12.5px; font-weight: 500; letter-spacing: .2px; }
 .ks-brandactions { margin-left: auto; display: flex; align-items: center; gap: 9px; }
-.ks-akira {
-  border: 1px solid var(--ks-line); background: #fff; color: var(--ks-ink);
-  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
+.ks-especiales {
+  border: 1px solid var(--ks-accent); background: var(--ks-accent); color: #fff;
+  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
 }
-.ks-akira:hover { border-color: var(--ks-accent); color: var(--ks-accent-ink); }
+.ks-especiales:hover { filter: brightness(1.06); }
+/* ── v1.1.77 · Botón y modal FICHA TÉCNICA ── */
+.ks-fichatec {
+  border: 1px solid #7d5bb5; background: #7d5bb5; color: #fff;
+  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  margin-right: 8px;
+}
+.ks-fichatec:hover { filter: brightness(1.08); }
+/* ── v1.1.84 · Botón TIENDA (venta de productos sin cita) ── */
+.ks-tienda {
+  border: 1px solid #0f766e; background: #0f766e; color: #fff;
+  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  margin-right: 8px;
+}
+.ks-tienda:hover { filter: brightness(1.08); }
+
+/* ── v1.1.97 · Botón y popup FICHA DEL CLIENTE (modal de la cita) ── */
+.ks-modal-ficha { margin-top: 11px; }
+.ks-fichacli {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid #7d5bb5; background: #f6f2fb; color: #5b3f8a;
+  border-radius: 9px; padding: 10px; font-size: 12px; font-weight: 700;
+  text-align: center; cursor: pointer;
+}
+.ks-fichacli:hover:not(:disabled) { background: #7d5bb5; color: #fff; }
+.ks-fichacli:disabled { opacity: .45; cursor: not-allowed; }
+.fc-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 210; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.fc-modal { background: #fff; border-radius: 14px; width: min(720px,96vw); max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.fc-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--ks-line); }
+.fc-title { font-size: 15px; font-weight: 700; color: var(--ks-ink); }
+.fc-sub { font-size: 12px; color: var(--ks-ink3); margin-top: 2px; }
+.fc-x { border: none; background: transparent; font-size: 19px; cursor: pointer; color: #9ca3af; line-height: 1; }
+.fc-search { padding: 13px 20px; border-bottom: 1px solid var(--ks-line); }
+.fc-input { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--ks-line); border-radius: 8px; font-size: 13px; font-family: inherit; }
+.fc-results { border: 1px solid var(--ks-line); border-radius: 8px; margin-top: 6px; max-height: 190px; overflow: auto; }
+.fc-cli { padding: 9px 12px; border-bottom: 1px solid var(--ks-line); cursor: pointer; }
+.fc-cli:last-child { border-bottom: none; }
+.fc-cli:hover { background: var(--ks-paper2); }
+.fc-cli-name { font-size: 13px; font-weight: 600; color: var(--ks-ink); }
+.fc-body { padding: 15px 20px; overflow: auto; flex: 1; }
+.fc-sec { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--ks-ink3); margin: 0 0 8px; }
+.fc-sec.mt { margin-top: 18px; }
+.fc-visita { border: 1px solid var(--ks-line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.fc-vh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.fc-vfecha { font-size: 13px; font-weight: 700; color: var(--ks-ink); }
+.fc-vhora { font-size: 12px; color: var(--ks-ink3); }
+.fc-vof { font-size: 11.5px; font-weight: 600; color: #fff; background: var(--ks-ink); padding: 2px 8px; border-radius: 999px; }
+.fc-vsrv { font-size: 12.5px; color: var(--ks-ink2); }
+.fc-notared { border: 1px solid #f2c3bf; background: #fdf5f4; border-left: 4px solid #d92d20; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.fc-notared-h { font-size: 11px; font-weight: 700; color: #a4271d; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 4px; }
+.fc-notared-t { font-size: 13px; line-height: 1.5; color: var(--ks-ink); white-space: pre-wrap; word-break: break-word; }
+.fc-msg { border: 1px solid #cfe3f5; background: #f4f9fd; border-left: 3px solid #4a90c2; border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; }
+.fc-msg-f { font-size: 11px; color: var(--ks-ink3); margin-bottom: 3px; }
+.fc-msg-t { font-size: 13px; line-height: 1.5; color: var(--ks-ink); white-space: pre-wrap; word-break: break-word; }
+.fc-tabs { display: flex; gap: 6px; margin: 0 0 10px; }
+.fc-tab { flex: 1; border: 1px solid var(--ks-line); background: #fff; border-radius: 9px; padding: 9px; font-size: 12px; font-weight: 700; color: var(--ks-ink2); text-align: center; cursor: pointer; }
+.fc-tab.on { border-color: #7d5bb5; background: #f6f2fb; color: #5b3f8a; }
+.fc-ta { width: 100%; box-sizing: border-box; min-height: 84px; padding: 10px 11px; border: 1px solid var(--ks-line); border-radius: 9px; font-size: 13px; font-family: inherit; line-height: 1.5; resize: vertical; }
+.fc-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.fc-save { border: 1px solid #7d5bb5; background: #7d5bb5; color: #fff; border-radius: 9px; padding: 9px 18px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.fc-save:hover:not(:disabled) { filter: brightness(1.08); }
+.fc-save:disabled { opacity: .5; cursor: not-allowed; }
+.fc-nota { border: 1px solid var(--ks-line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.fc-nota-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.fc-nota-meta { font-size: 11px; color: var(--ks-ink3); }
+.fc-nota-t { font-size: 13px; line-height: 1.5; color: var(--ks-ink); white-space: pre-wrap; word-break: break-word; }
+.fc-nota-rm { border: none; background: transparent; color: #c2483f; font-size: 13px; cursor: pointer; line-height: 1; }
+.fc-empty { text-align: center; padding: 22px 16px; color: var(--ks-ink3); font-size: 12.5px; }
+.fc-nodata { border: 1px dashed var(--ks-line); border-radius: 10px; padding: 14px; text-align: center; color: var(--ks-ink3); font-size: 12.5px; }
+.fc-foot { padding: 11px 20px; border-top: 1px solid var(--ks-line); font-size: 11px; color: #9ca3af; }
+
+/* ── v1.1.76 · Botón y modal ALMACÉN ── */
+.ks-almacen {
+  border: 1px solid #1c9c93; background: #1c9c93; color: #fff;
+  padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 700; cursor: pointer;
+  margin-right: 8px;
+}
+.ks-almacen:hover { filter: brightness(1.08); }
+.alm-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.alm-modal { background: #fff; border-radius: 14px; width: min(680px,96vw); max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.alm-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--ks-line); }
+.alm-title { font-size: 15px; font-weight: 700; color: var(--ks-ink); }
+.alm-x { border: none; background: transparent; font-size: 19px; cursor: pointer; color: #9ca3af; line-height: 1; }
+.alm-filters { display: flex; gap: 8px; padding: 13px 20px; border-bottom: 1px solid var(--ks-line); flex-wrap: wrap; }
+.alm-input { flex: 1; min-width: 170px; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--ks-line); border-radius: 8px; font-size: 13px; font-family: inherit; }
+.alm-input:focus { outline: none; border-color: #1c9c93; }
+.alm-sel { padding: 9px 10px; border: 1px solid var(--ks-line); border-radius: 8px; font-size: 12.5px; font-family: inherit; background: #fff; max-width: 190px; }
+.alm-list { overflow-y: auto; padding: 6px 20px 14px; flex: 1; }
+.alm-row { display: flex; align-items: center; gap: 11px; padding: 9px 0; border-bottom: 1px solid var(--ks-line); }
+.alm-row:last-child { border-bottom: none; }
+.alm-img { width: 38px; height: 38px; border-radius: 8px; object-fit: cover; background: #f3f4f6; flex-shrink: 0; }
+.alm-main { flex: 1; min-width: 0; }
+.alm-name { font-size: 13px; font-weight: 700; color: var(--ks-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.alm-meta { font-size: 10.5px; color: #9ca3af; margin-top: 1px; }
+.alm-cnt { text-align: center; min-width: 46px; flex-shrink: 0; }
+.alm-cnt b { display: block; font-size: 16px; font-weight: 800; color: var(--ks-ink); line-height: 1.1; }
+.alm-cnt span { font-size: 8.5px; letter-spacing: .4px; text-transform: uppercase; color: #9ca3af; font-weight: 700; }
+.alm-cnt.use b { color: #1c9c93; }
+.alm-acts { display: flex; gap: 6px; flex-shrink: 0; }
+.alm-btn { border: 1px solid var(--ks-line); background: #fff; border-radius: 8px; padding: 6px 9px; font-size: 15px; cursor: pointer; line-height: 1; font-family: inherit; }
+.alm-btn:hover { border-color: #1c9c93; }
+.alm-btn:disabled { opacity: .35; cursor: not-allowed; }
+.alm-btn small { display: block; font-size: 8.5px; font-weight: 700; letter-spacing: .3px; color: #6b7280; margin-top: 2px; }
+.alm-low { color: #d97706; font-weight: 700; }
+.alm-empty { text-align: center; padding: 34px 10px; color: #9ca3af; font-size: 13px; }
+.alm-foot { padding: 11px 20px; border-top: 1px solid var(--ks-line); font-size: 11px; color: #9ca3af; }
+
+/* ── Modal ESPECIALES (venta manual) ── */
+.esp-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 200; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.esp-modal { background: #fff; border-radius: 14px; width: min(560px,96vw); max-height: 92vh; overflow: auto; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.esp-head { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--ks-line); position: sticky; top: 0; background: #fff; z-index: 1; }
+.esp-title { font-size: 15px; font-weight: 700; color: var(--ks-ink); }
+.esp-x { border: none; background: transparent; font-size: 19px; cursor: pointer; color: #9ca3af; line-height: 1; }
+.esp-body { padding: 16px 20px; }
+.esp-sec { margin-bottom: 16px; }
+.esp-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: #9ca3af; margin-bottom: 7px; display: block; }
+.esp-input { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--ks-line); border-radius: 8px; font-size: 13px; font-family: inherit; }
+.esp-select { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid var(--ks-line); border-radius: 8px; font-size: 13px; font-family: inherit; background: #fff; }
+.esp-cli-results { border: 1px solid var(--ks-line); border-radius: 8px; margin-top: 6px; max-height: 180px; overflow: auto; }
+.esp-cli-item { padding: 8px 11px; cursor: pointer; border-bottom: 1px solid var(--ks-paper2); }
+.esp-cli-item:last-child { border-bottom: none; }
+.esp-cli-item:hover { background: var(--ks-paper2); }
+.esp-cli-name { font-size: 13px; font-weight: 600; color: var(--ks-ink); }
+.esp-cli-sub { font-size: 11px; color: #9ca3af; }
+.esp-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--ks-accent); border-radius: 8px; background: var(--ks-paper2); }
+.esp-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.esp-tab { flex: 1; padding: 9px 4px; border: 1px solid var(--ks-line); background: #fff; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--ks-ink); }
+.esp-tab.active { background: var(--ks-accent); color: #fff; border-color: var(--ks-accent); }
+.esp-price { margin-top: 9px; font-size: 14px; font-weight: 700; color: var(--ks-ink); }
+.esp-price small { font-weight: 500; color: #9ca3af; font-size: 11px; }
+.esp-pay { display: flex; gap: 6px; }
+.esp-paybtn { flex: 1; padding: 9px; border: 1px solid var(--ks-line); background: #fff; border-radius: 8px; font-size: 12.5px; font-weight: 600; cursor: pointer; color: var(--ks-ink); }
+.esp-paybtn.active { background: var(--ks-ink); color: #fff; border-color: var(--ks-ink); }
+.esp-emit { width: 100%; margin-top: 4px; padding: 13px; border: none; border-radius: 10px; background: var(--ks-accent); color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; }
+.esp-emit:disabled { opacity: .45; cursor: not-allowed; }
+.esp-row2 { display: flex; gap: 8px; }
+.esp-row2 > * { flex: 1; }
+.esp-link { background: none; border: none; color: var(--ks-accent); font-size: 12px; font-weight: 600; cursor: pointer; padding: 6px 0; }
+.esp-gift { margin-top: 10px; }
+.esp-muted { font-size: 12px; color: #9ca3af; }
+.esp-notice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 11px; font-size: 12.5px; line-height: 1.5; margin-bottom: 12px; }
+.esp-notice.warn { background: #fbf4e6; border: 1px solid #ecd9ae; color: #7a5714; }
+.esp-notice.ok { background: #eef8f1; border: 1px solid #c4e4cd; color: #1f7a3d; }
+.esp-notice-act { flex-shrink: 0; background: var(--ks-accent); color: #fff; border: none; border-radius: 8px; padding: 8px 13px; font-size: 12px; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.esp-notice-act:hover { filter: brightness(1.06); }
 .ks-automodel {
   border: 1px solid var(--ks-line); background: var(--ks-paper2); color: var(--ks-ink2);
   padding: 7px 13px; border-radius: 8px; font-size: 12.5px; font-weight: 600;
@@ -1200,6 +2212,19 @@ button { font-family: inherit; cursor: pointer; }
 .leg-paid::before { background: oklch(0.72 0.16 150); }
 .leg-pending::before { background: var(--ks-accent); }
 .leg-block::before { background: repeating-linear-gradient(135deg, oklch(0.62 0.13 350 / .5) 0 3px, transparent 3px 6px); border-radius: 2px; }
+/* v1.1.81 — stepper de cantidad del popup de detalle */
+.ks-qty-row { display: flex; align-items: center; gap: 10px; }
+.ks-qty-btn { width: 40px; min-width: 40px; justify-content: center; font-size: 16px; font-weight: 700; }
+.ks-qty-val { min-width: 30px; text-align: center; font-weight: 700; font-size: 15px; color: var(--ks-ink); }
+/* v1.1.81 — cabecera del armado múltiple */
+.ks-armed-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ks-armed-count { font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 6px; color: #fff; background: var(--ks-accent); }
+.ks-armed-list { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.ks-armed-item { font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 6px; color: var(--ks-ink2); background: var(--ks-paper2); border: 1px solid var(--ks-line2); }
+.ks-armed-item.is-now { color: var(--ks-ink); border-color: var(--ks-accent); }
+.ks-armed-mode { display: flex; align-items: center; gap: 0; border: 1px solid var(--ks-line2); border-radius: 7px; overflow: hidden; }
+.ks-armed-modebtn { font-family: inherit; font-size: 10.5px; font-weight: 600; padding: 4px 9px; border: 0; cursor: pointer; color: var(--ks-ink2); background: var(--ks-paper2); }
+.ks-armed-modebtn.active { color: #fff; background: var(--ks-ink); }
 
 /* ============================ PANEL ============================ */
 .ks-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
@@ -1368,6 +2393,10 @@ button { font-family: inherit; cursor: pointer; }
 .ks-comodin-note { position: absolute; top: 10px; left: 10px; right: 10px; font-size: 10.5px; line-height: 1.4; color: #2f6fd9; background: oklch(0.97 0.02 255 / .9); border: 1px dashed color-mix(in oklab, #2f6fd9 40%, var(--ks-line)); border-radius: 8px; padding: 7px 9px; z-index: 3; }
 
 /* ---- appt block ---- */
+/* v1.1.100 — Cita con mensaje del cliente: banda roja a la izquierda.
+   El mensaje se escribe en el widget público de reservas y viaja en
+   KamisuiteReservations.notes. El texto se lee en FICHA TÉCNICA. */
+.ks-appt.has-nota { border-left-color: #d92d20 !important; border-left-width: 6px; }
 .ks-appt {
   position: absolute; left: 5px; right: 5px; z-index: 5;
   border: 0; border-left: 4px solid rgba(0,0,0,.2); border-radius: 6px;
@@ -1382,6 +2411,7 @@ button { font-family: inherit; cursor: pointer; }
 .ks-appt-time { font-size: 9.5px; font-weight: 500; opacity: .82; font-variant-numeric: tabular-nums; flex: none; }
 .ks-appt-client { font-size: 11px; font-weight: 600; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ks-appt-svc { font-size: 10px; font-weight: 500; opacity: .92; line-height: 1.2; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.ks-appt-fold { font-size: 10px; font-weight: 500; opacity: .85; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ks-appt-rango { font-size: 10px; font-weight: 500; opacity: .75; margin-top: 1px; }
 /* v1.1.14 — resize handle (asa en el borde inferior del último bloque) */
 .ks-appt-resize { position: absolute; left: 50%; bottom: 2px; transform: translateX(-50%);
@@ -1395,9 +2425,12 @@ button { font-family: inherit; cursor: pointer; }
   color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center;
   justify-content: space-between; padding: 2px 8px; z-index: 2;
   border-left: 3px solid color-mix(in oklab, var(--staff) 50%, #000 50%); }
-.ks-appt-ext-lbl { letter-spacing: .5px; }
+.ks-appt-ext-lbl { letter-spacing: .5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+/* v1.1.89 — la ✕ nunca se encoge ni se recorta: es la única forma de
+   quitar la extensión. Diana de 22px, cómoda también en iPad. */
 .ks-appt-ext-rm { background: transparent; border: 0; color: #fff; cursor: pointer;
-  font-size: 14px; font-weight: 700; padding: 0 4px; opacity: .85; }
+  font-size: 13px; font-weight: 700; line-height: 1; padding: 0 4px; opacity: .9;
+  flex: none; min-width: 22px; height: 100%; display: flex; align-items: center; justify-content: center; }
 .ks-appt-ext-rm:hover { opacity: 1; }
 .ks-appt-resize-preview { position: absolute; left: 3px; right: 3px; border-radius: 6px;
   background: repeating-linear-gradient(135deg, rgba(255,200,100,.6), rgba(255,200,100,.6) 5px,
@@ -1405,6 +2438,17 @@ button { font-family: inherit; cursor: pointer; }
   color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center;
   justify-content: center; pointer-events: none; z-index: 5;
   border: 1px dashed rgba(255,255,255,.7); }
+/* v1.1.91 — preview de ACORTADO: se pinta ENCIMA del tramo que se recorta.
+   v1.1.95 — z-index 12: por encima de .ks-appt (5) y de .ks-appt:hover (8),
+   que es lo que lo tapaba durante el arrastre. Línea de corte marcada en
+   el borde superior: ahí queda el nuevo final de la fase. */
+.ks-appt-resize-preview.is-cut {
+  z-index: 12;
+  background: repeating-linear-gradient(135deg, rgba(220,80,80,.88), rgba(220,80,80,.88) 5px,
+    rgba(170,30,30,.94) 5px, rgba(170,30,30,.94) 10px);
+  border: 1px dashed rgba(255,255,255,.85);
+  border-top: 2px solid #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,.55); }
 /* v1.1.17 — Modal productos (estilo V1) */
 .pd-search { width: 100%; padding: 9px 12px; border: 1px solid var(--ks-line); border-radius: 8px;
   font-size: 13px; font-family: inherit; margin-bottom: 10px; box-sizing: border-box; }
@@ -1602,6 +2646,12 @@ button { font-family: inherit; cursor: pointer; }
 .ks-item-rm:hover { background: rgba(185,28,28,.08); }
 .ks-item-rm:disabled { opacity: .25; cursor: wait; }
 .ks-item-rm { border: 0; background: transparent; color: oklch(0.6 0.16 25); font-size: 13px; }
+/* v1.1.90 — Fila de gramos de los servicios con tarifa por peso */
+.ks-weight-row { display: flex; align-items: center; gap: 7px; padding: 0 0 8px 4px; }
+.ks-weight-input { width: 78px; padding: 5px 7px; border: 1px solid var(--ks-line2); border-radius: 7px; font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; background: var(--ks-paper2); color: var(--ks-ink); }
+.ks-weight-rate { font-size: 11.5px; color: var(--ks-ink3); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ks-weight-ok { margin-left: auto; border: 0; border-radius: 7px; padding: 5px 11px; font-size: 11.5px; font-weight: 700; background: var(--ks-ink); color: var(--ks-paper); cursor: pointer; }
+.ks-weight-ok:disabled { opacity: .4; cursor: wait; }
 .ks-modal-total { display: flex; align-items: center; justify-content: space-between; padding: 13px 0; border-top: 2px solid var(--ks-ink); font-weight: 800; font-size: 15px; }
 .ks-total-val { font-size: 20px; font-variant-numeric: tabular-nums; }
 .ks-modal-pays { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
@@ -1682,6 +2732,27 @@ button { font-family: inherit; cursor: pointer; }
   max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ks-fase-ghost .g-cli { font-weight: 700; }
 .ks-fase-ghost .g-svc { font-weight: 500; opacity: .85; margin-top: 2px; }
+/* v1.1.64 — hora destino en vivo dentro del ghost del drag de fase */
+.ks-fase-ghost .g-time { font-weight: 800; margin-top: 3px; font-size: 13px; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+/* v1.1.64 — icono ajustar hora de inicio de fase (aparece al pasar el ratón sobre el bloque) */
+.ks-appt-timeadj { position: absolute; top: 4px; right: 23px; z-index: 4; width: 16px; height: 16px; border-radius: 5px; display: grid; place-items: center; font-size: 10px; line-height: 1; background: rgba(0,0,0,.30); color: #fff; cursor: pointer; opacity: 0; transition: opacity .12s, background .12s; }
+.ks-appt:hover .ks-appt-timeadj { opacity: 1; }
+.ks-appt-timeadj:hover { background: rgba(0,0,0,.6); }
+/* v1.1.64 — duración por servicio en la card de la cita */
+.ks-item-dur { font-size: 10.5px; color: var(--ks-ink3); font-weight: 600; font-variant-numeric: tabular-nums; }
+/* v1.1.64 — selector de hora (confirmar antes de pintar / reajustar fase) */
+.ks-horapick { position: relative; z-index: 1; width: min(340px, 92vw); background: #fff; border-radius: 16px; box-shadow: var(--ks-shadow-lg); padding: 18px 20px 16px; }
+.ks-horapick-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.ks-horapick-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: .8px; text-transform: uppercase; color: var(--ks-accent-ink); }
+.ks-horapick-title { margin: 2px 0 0; font-size: 17px; font-weight: 700; color: var(--ks-ink); }
+.ks-horapick-sub { font-size: 12px; color: var(--ks-ink2); margin-top: 3px; }
+.ks-horapick-display { text-align: center; font-size: 46px; font-weight: 800; letter-spacing: 1px; color: var(--ks-ink); font-variant-numeric: tabular-nums; margin: 10px 0 14px; }
+.ks-horapick-steppers { display: flex; align-items: center; justify-content: center; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.ks-horapick-step { border: 1px solid var(--ks-line); background: var(--ks-paper2); color: var(--ks-ink2); border-radius: 9px; padding: 8px 10px; font-size: 13px; font-weight: 700; min-width: 46px; }
+.ks-horapick-step:hover { border-color: var(--ks-accent); color: var(--ks-accent-ink); }
+.ks-horapick-input { font-family: inherit; font-size: 20px; font-weight: 700; text-align: center; border: 1px solid var(--ks-line); border-radius: 10px; padding: 6px 8px; color: var(--ks-ink); width: 116px; font-variant-numeric: tabular-nums; }
+.ks-horapick-foot { display: flex; gap: 10px; }
+.ks-horapick-foot .ks-detail-cancel, .ks-horapick-foot .ks-detail-add { flex: 1; }
 .ks-blockpreview { position: absolute; left: 4px; right: 4px; z-index: 7; pointer-events: none; white-space: nowrap;
   background: repeating-linear-gradient(135deg, oklch(0.45 0.03 260 / .18) 0 7px, oklch(0.45 0.03 260 / .06) 7px 14px);
   border: 1.5px dashed var(--ks-ink3); border-radius: 7px;
@@ -1792,12 +2863,47 @@ button { font-family: inherit; cursor: pointer; }
 .cierre-section { grid-column:1/-1; margin-top:4px; }
 .cierre-section-title { font-size:10px; font-weight:700; color:#c9a44a; text-transform:uppercase; letter-spacing:.6px; margin-bottom:6px; border-bottom:1px solid #e2e5ea; padding-bottom:4px; }
 .cierre-row { display:flex; justify-content:space-between; align-items:center; padding:4px 8px; font-size:11px; }
+/* v1.1.92 — agrupación por profesional y bloques sin actividad */
+.cierre-staffgroup { display:flex; justify-content:space-between; align-items:center; padding:6px 8px 3px; margin-top:4px; border-bottom:1px solid #e8eaee; }
+.cierre-staffgroup-name { font-size:10.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; color:#4b5563; }
+.cierre-staffgroup-tot { font-size:10.5px; font-weight:700; color:#6b7280; font-variant-numeric:tabular-nums; }
+.cierre-row-ind { padding-left:16px; }
+.cierre-row-vacio { display:block; padding:8px; font-size:11px; font-style:italic; color:#9ca3af; }
+/* v1.1.96 — chips de lo que el cliente ya tiene contratado */
+.ks-cchips { display:flex; flex-wrap:wrap; gap:4px; margin-top:6px; }
+.ks-cchip { display:inline-flex; align-items:center; gap:3px; padding:2px 7px; border-radius:999px; font-size:10px; font-weight:700; letter-spacing:.2px; border:1px solid transparent; }
+.ks-cchip-n { font-weight:800; opacity:.75; font-variant-numeric:tabular-nums; }
+.ks-cchip.is-prime { background:#fdf3d6; color:#8a6100; border-color:#e8c877; }
+.ks-cchip.is-bono  { background:#e7f3ff; color:#1b5f9e; border-color:#a9cef0; }
+.ks-cchip.is-promo { background:#f3e9ff; color:#6b34a8; border-color:#d3bcf0; }
+.ks-cchip.is-prod  { background:#e6f6ec; color:#1b6b3a; border-color:#a9d9bd; }
+/* v1.1.94 — confirmación de datáfono / Bizum en el arqueo */
+.ks-conf-block { margin-top:10px; padding-top:9px; border-top:1px solid var(--ks-line2); display:flex; flex-wrap:wrap; gap:7px; }
+.ks-conf-hint { flex:1 0 100%; font-size:10.5px; color:var(--ks-ink3); font-weight:600; }
+.ks-conf-btn { flex:1; min-width:120px; border:1px solid var(--ks-line); background:var(--ks-paper2); color:var(--ks-ink2); border-radius:8px; padding:7px 9px; font:inherit; font-size:11.5px; font-weight:700; cursor:pointer; }
+.ks-conf-btn.is-ok { border-color:oklch(0.5 0.14 150); background:oklch(0.5 0.14 150 / .12); color:oklch(0.42 0.14 150); }
+/* v1.1.94 — observatorio semanal */
+.obs-day { padding:6px 8px; border-bottom:1px solid #eef0f3; }
+.obs-day.is-future { opacity:.45; }
+.obs-day-head { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:3px; }
+.obs-day-name { font-size:11px; font-weight:800; color:#4b5563; text-transform:uppercase; letter-spacing:.4px; }
+.obs-day-tot { font-size:11.5px; font-weight:700; font-variant-numeric:tabular-nums; }
+.obs-line { display:flex; align-items:center; gap:8px; padding:2px 0 2px 10px; font-size:11px; }
+.obs-met { flex:1; color:#6b7280; }
+.obs-imp { font-variant-numeric:tabular-nums; min-width:64px; text-align:right; }
+.obs-chip { min-width:74px; text-align:center; font-size:8.5px; font-weight:800; letter-spacing:.5px; padding:2px 6px; border-radius:4px; }
+.obs-ok { color:#15803d; background:rgba(21,128,61,.13); }
+.obs-pdte { color:#b91c1c; background:rgba(185,28,28,.12); }
+.obs-na { color:#c3c7cd; background:transparent; }
 .cierre-row:nth-child(odd) { background:rgba(0,0,0,.03); border-radius:4px; }
 /* v1.1.21 — bloques rendimiento / cierre + banner reconciliación */
 .cierre-block { border-radius:12px; padding:14px; margin-bottom:14px; border:1px solid var(--ks-line); background:#fff; }
 .cierre-block-rend { border-left:4px solid #15803d; }
 .cierre-block-fin  { border-left:4px solid #c9a44a; }
 .cierre-block-title { font-size:14px; font-weight:800; color:var(--ks-ink); margin-bottom:10px; display:flex; align-items:baseline; gap:8px; }
+.cierre-copybtn { margin-left:auto; align-self:center; font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.4px; color:var(--ks-ink); background:#f4f5f7; border:1px solid #e2e5ea; border-radius:6px; padding:4px 9px; cursor:pointer; white-space:nowrap; }
+.cierre-copybtn:hover { background:#e9ebee; }
+.cierre-copybtn:active { transform:translateY(1px); }
 .cierre-block-emoji { font-size:18px; }
 .cierre-block-sub { font-size:10px; font-weight:500; color:#9ca3af; text-transform:lowercase; letter-spacing:.2px; margin-left:auto; }
 .cierre-headergrid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }
@@ -1822,6 +2928,28 @@ button { font-family: inherit; cursor: pointer; }
 .cierre-importe { font-weight:700; }
 .cierre-metodo-icon { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
 .cierre-banner { background:#fff5e6; border:1px solid #d48a1a; color:#d48a1a; padding:8px 12px; border-radius:6px; font-size:12px; font-weight:600; margin-bottom:10px; grid-column:1/-1; }
+
+/* ============================================================
+   v1.1.87 — CAPA TÁCTIL (tablet)
+   Estado "armado" tras pulsación larga. Se aplica también con
+   ratón si alguna vez se dispara, pero solo lo activa el gesto
+   táctil, así que en escritorio nunca aparece.
+   ============================================================ */
+.ks-appt.is-touch-armed { box-shadow: var(--ks-shadow-lg); outline: 2px solid #fff; outline-offset: -2px; transform: scale(1.03); z-index: 9; }
+.ks-col.is-touch-armed { background: rgba(201, 164, 74, .10); outline: 2px dashed #c9a44a; outline-offset: -2px; }
+
+@media (hover: none) {
+  /* El 🕑 ajusta la hora de la fase sin arrastrar. Vivía solo en
+     :hover → invisible con el dedo. Aquí permanente y más grande. */
+  .ks-appt-timeadj { opacity: 1; width: 20px; height: 20px; font-size: 12px; top: 3px; right: 21px; background: rgba(0,0,0,.42); }
+
+  /* Asa de resize: mismo aspecto, zona de impacto ampliada. */
+  .ks-appt-resize { touch-action: none; }
+  .ks-appt-resize::after { content: ''; position: absolute; left: -14px; right: -14px; top: -9px; bottom: -6px; }
+
+  /* iOS abre el callout de selección al mantener pulsado si no se corta. */
+  .ks-appt, .ks-col { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+}
 `;
 
   class RecepcionProCMS extends HTMLElement {
@@ -1846,12 +2974,47 @@ button { font-family: inherit; cursor: pointer; }
       this._staff = [];
       this._reservas = [];
       this._armed = null;              // servicio armado para colocar
+      // v1.1.81 — ARMADO MÚLTIPLE. `_armed` sigue siendo la línea que se
+      // está colocando ahora (todo el render existente lo lee tal cual).
+      // Las líneas siguientes esperan en `_armedQueue` y se añaden a la
+      // MISMA cita con `agregar-servicio`, que es lo que ya hace el botón
+      // "+ Servicio adicional" del modal: una fila, un total, un cobro,
+      // un solo WhatsApp (la centralita solo la dispara crearPackReserva).
+      this._armedQueue = [];           // líneas pendientes tras la actual
+      this._armedStaffMode = 'same';   // 'same' = todo al mismo profesional
+                                       // 'each' = elegir columna por servicio
+      this._packReservaId = null;      // id de la cita en curso (líneas 2..N)
+      this._packStaffId = null;        // columna donde se colocó la línea 1
+      this._chainActivo = false;       // distingue cadena de armado del
+                                       // "+ Servicio adicional" del modal
+      this._pendingMove = null;        // {staffId, mins} destino de la línea
+      this._moveQueue = [];            // movimientos de fase pendientes,
+                                       // SIEMPRE secuenciales: wixData.update
+                                       // reemplaza el documento entero y dos
+                                       // moverFase en paralelo se pisarían.
+      this._cantidad = 1;              // cantidad elegida en el popup
+      this._chainMoving = false;       // reubicando fases de la cadena
+      this._addSvcUid = '';            // "+ Servicio adicional": selección
+      this._addSvcVarIdx = 0;
+      this._addSvcComplSel = {};
+      this._addCmpUid = '';            // "⛓ Complemento": selección
+      this._addCmpVarIdx = 0;
+      this._tiendaEsperandoCliente = false;  // alta de cliente desde TIENDA
+      this._ventaTiendaActiva = false;       // el modal de venta viene de TIENDA
+      this._ventaTiendaKey = '';             // sourceKey (bookingId) de la venta
+      this._ventaTiendaTotal = 0;
+      this._ventaDoc = null;                 // documento emitido de la venta
+      this._ventaForm = false;               // form CIF/DNI abierto
+      this._ventaGenerando = false;
+      this._tiendaVatId = '';                // CIF/DNI capturado en TIENDA
+      this._tiendaLegalName = '';            // razón social capturada en TIENDA
       this._reservando = false;
       this._pagando = false;
       this._modalReserva = null;
       this._disc = 0;
       this._canjeActivo = null;        // v1.1.50 — F4/F5 canje activo del modal de cobro
       this._productosCliente = null;   // v1.1.51 — F4/F5 { prime, bonos, tarjetas } del cliente
+      this._chipsCliente = null;       // v1.1.96 — { contactId, prime, bonos, tarjetas, comprasProductos } del panel
       // v1.1.53 — Columna lateral colapsable. Default según ancho de viewport:
       // < 1024px (móvil horizontal / tablet pequeña) → colapsada de inicio
       //          para que el calendario tenga el ancho completo.
@@ -1876,7 +3039,7 @@ button { font-family: inherit; cursor: pointer; }
       // v1.1.40 — this._customBlocks ELIMINADO. Los bloqueos persisten en
       // KamisuiteReservations con family='BLOQUEO' y se leen vía this._reservas.
       // v1.1.8 — settings + datepicker + cierre
-      this._settings = { rowHeight: 56, titleMode: 'servicio', interval: 30, staffConfig: {} };
+      this._settings = { rowHeight: 56, titleMode: 'servicio', interval: 15, staffConfig: {} };
       this._settingsLoaded = false;
       this._saveSettingsTimer = null;
       this._dpYear = null;
@@ -1884,6 +3047,12 @@ button { font-family: inherit; cursor: pointer; }
       this._activeColorStaffId = null;
       this._cierreData = null;
       this._cierreLoading = false;
+      // v1.1.63 — nombres del salón para las cabeceras del texto copiable
+      // del informe del día. Los pide al montar (salonNombres → page code
+      // → getSalonConfig). brandName para el bloque productivo, legalName
+      // para el financiero.
+      this._salonBrandName = '';
+      this._salonLegalName = '';
       // ─── v1.1.45: capa de acceso / login por PIN (Shadow DOM) ───
       this._usersActivation = false;   // flag del salón: ¿login activo?
       this._usersActivationRecibido = false; // v1.1.46 — respuesta recibida (corta retry)
@@ -1906,6 +3075,11 @@ button { font-family: inherit; cursor: pointer; }
       this._facturaFormLegalName = '';  // valor input razón social
       this._facturaGenerando = false;   // pulsado Ticket o Factura, esperando respuesta
       this._pagoCita = null;            // datos pago {tipoPago, desglose...} para mostrar método
+      // v1.1.71 — Apertura de caja (fondo inicial del día). Módulo opcional
+      // gobernado por SalonConfig.arqueoActivo (lo decide el page code).
+      this._aperturaChequeada = false;   // ¿ya se disparó check-apertura-caja?
+      this._aperturaSaltadaFecha = null; // fecha para la que el operador saltó
+      this._aperturaFondo = 0;           // importe editable del modal de apertura
     }
 
     connectedCallback() {
@@ -1918,8 +3092,24 @@ button { font-family: inherit; cursor: pointer; }
       }
       this._renderShell();
       this._updateSteps();
+      // v1.1.66 — FIX "Catálogo Cargando" colgado. Si Wix desconecta+reconecta
+      // el custom element (2º connectedCallback, habitual en Wix durante la
+      // hidratación/relayout), _renderShell repinta el placeholder estático
+      // "Cargando catálogo…", pero el catálogo YA llegó (_loading=false,
+      // _servicios poblado) y el retry de 'ready' no re-dispara porque
+      // _catalogoRecibido ya es true → el panel se queda colgado hasta tocar
+      // un filtro. La agenda se rescata sola por el polling de 30s; el panel
+      // no tiene rescate. Repintamos ambos con lo que ya haya en memoria:
+      // en el 1er montaje _loading=true → _renderPanel muestra "Cargando…"
+      // normal y _renderCalendar es no-op (aún sin staff); en la reconexión
+      // pintan los datos reales al instante.
+      this._renderPanel();
+      this._renderCalendar();
       this._sendToPage('ready', {});
       this._sendToPage('get-settings', {});
+      // v1.1.63 — pedir nombres del salón (brandName/legalName) para las
+      // cabeceras del texto copiable del informe del día.
+      this._sendToPage('salonNombres', {});
       // v1.1.45 — preguntar si el salón tiene la capa de acceso activa.
       // Si la tiene, el page code responderá 'usersActivation' y pintamos
       // el login scrim sobre todo hasta validar PIN.
@@ -1976,7 +3166,112 @@ button { font-family: inherit; cursor: pointer; }
       // queries vs polling fijo cuando hay pestañas abiertas en background.
       this._startAutoRefresh();
 
+      // v1.1.71 — Apertura de caja: pedir el check UNA vez y solo para HOY.
+      // El page code decide (según SalonConfig.arqueoActivo) si responde con
+      // una sugerencia de fondo ('caja-fondo-sugerido') o no hace nada
+      // ('apertura-estado'). Fire-and-forget: nunca bloquea el montaje.
+      this._maybeCheckApertura();
+
       console.log(`${TAG} Montado.`);
+    }
+
+    // ═══════════════════════════════════════════════════
+    // v1.1.71 — APERTURA DE CAJA (fondo inicial del día)
+    // ═══════════════════════════════════════════════════
+    _maybeCheckApertura() {
+      if (this._aperturaChequeada) return;
+      if (this._fecha !== todayISO()) return;   // solo para HOY
+      this._aperturaChequeada = true;
+      this._sendToPage('check-apertura-caja', { fechaISO: this._fecha });
+    }
+
+    _onFondoSugerido(p) {
+      // Guards: solo HOY, solo si no se ha saltado hoy, y sin otro modal
+      // de caja/apertura ya abierto (no interrumpir un arqueo en curso).
+      if (this._fecha !== todayISO()) return;
+      if (this._aperturaSaltadaFecha === this._fecha) return;
+      if (this.shadowRoot.getElementById('aperturaScrim')) return;
+      if (this.shadowRoot.getElementById('cajaScrim')) return;
+      this._openAperturaModal({
+        fondoSugerido: Number(p.fondoSugerido || 0),
+        origen: p.origen || 'cero',
+        fechaOrigen: p.fechaOrigen || ''
+      });
+    }
+
+    _onCajaAbierta(p) {
+      if (p && p.ok) {
+        const fondo = Number((p.registro && p.registro.openingBalance) || 0);
+        this._toast(`Caja abierta ✓ · fondo ${fondo}€`);
+        this._cerrarApertura();
+        // Si el arqueo está abierto en este momento, refrescar para que el
+        // "Fondo inicial" y el "Efectivo esperado" reflejen el nuevo fondo.
+        this._cajaRefresh();
+      } else {
+        this._toast(`No se pudo abrir la caja${p && p.error ? ': ' + p.error : ''}`);
+      }
+    }
+
+    _origenAperturaTexto(origen, fechaOrigen, fondo) {
+      const eur = `${fondo || 0}€`;
+      switch (origen) {
+        case 'fondoFijo':
+          return `Fondo fijo configurado para tu salón: <strong>${eur}</strong>.`;
+        case 'cierreAyer':
+          return `Efectivo contado al cerrar caja el <strong>${esc(fechaOrigen || 'día anterior')}</strong>: <strong>${eur}</strong>.`;
+        case 'esperadoAyer':
+          return `Último efectivo registrado el <strong>${esc(fechaOrigen || 'día anterior')}</strong>: <strong>${eur}</strong>.`;
+        default:
+          return `No hay historial previo de caja. Empezamos desde <strong>0€</strong> (edítalo si tu caja arranca con otro fondo).`;
+      }
+    }
+
+    _openAperturaModal({ fondoSugerido, origen, fechaOrigen }) {
+      const root = this.shadowRoot;
+      root.getElementById('aperturaScrim')?.remove();
+      this._aperturaFondo = Number(fondoSugerido || 0);
+
+      const scrim = document.createElement('div');
+      scrim.className = 'ks-modal-scrim';
+      scrim.id = 'aperturaScrim';
+      // La apertura es un acto consciente: NO se cierra al clicar fuera.
+      // Solo "Saltar hoy" o "Confirmar apertura" cierran el modal.
+
+      const modal = document.createElement('div');
+      modal.className = 'ks-modal';
+      modal.id = 'aperturaModal';
+      modal.innerHTML = `
+        <div class="ks-modal-head">
+          <span class="ks-modal-staff">🌅 APERTURA DE CAJA</span>
+          <span class="ks-modal-status pending">Nuevo día</span>
+        </div>
+        <div class="ks-modal-meta">${this._fecha}</div>
+        <p class="ks-detail-note">${this._origenAperturaTexto(origen, fechaOrigen, this._aperturaFondo)}</p>
+        <div class="ks-disc-row">
+          <span class="ks-disc-lbl">💶 Fondo inicial</span>
+          <div class="ks-disc-input"><input id="aperturaInput" type="number" min="0" step="0.01" value="${this._aperturaFondo || ''}" placeholder="0"><span>€</span></div>
+        </div>
+        <div class="ks-modal-pays" style="margin-top:12px">
+          <button class="ks-pay" id="aperturaSaltar" style="flex:1;background:#fff;color:var(--ks-ink);border:1px solid var(--ks-line)">Saltar hoy</button>
+          <button class="ks-pay pay-efectivo" id="aperturaConfirm" style="flex:1">Confirmar apertura</button>
+        </div>`;
+      scrim.appendChild(modal);
+      root.appendChild(scrim);
+
+      const inp = modal.querySelector('#aperturaInput');
+      inp?.addEventListener('input', e => { this._aperturaFondo = parseFloat(e.target.value) || 0; });
+      modal.querySelector('#aperturaSaltar')?.addEventListener('click', () => {
+        this._aperturaSaltadaFecha = this._fecha;
+        this._cerrarApertura();
+      });
+      modal.querySelector('#aperturaConfirm')?.addEventListener('click', () => {
+        this._sendToPage('caja-abrir', { fechaISO: this._fecha, openingBalance: this._aperturaFondo });
+      });
+      setTimeout(() => { try { inp?.focus(); inp?.select(); } catch (_) {} }, 60);
+    }
+
+    _cerrarApertura() {
+      this.shadowRoot.getElementById('aperturaScrim')?.remove();
     }
 
     // v1.1.35 — Polling adaptativo
@@ -2099,6 +3394,23 @@ button { font-family: inherit; cursor: pointer; }
         case 'reservaCreada':
           this._reservando = false;
           if (p.ok) {
+            // v1.1.81 — ¿quedan líneas del armado múltiple? Entonces esta
+            // reserva es la cita CONTENEDORA y el resto de servicios se
+            // añaden dentro de ella (un total, un cobro, un WhatsApp).
+            if (this._armedQueue.length && p.reservaId) {
+              this._packReservaId = p.reservaId;
+              this._chainActivo = true;
+              this._armed = this._armedQueue.shift();
+              this._renderArmedHint();
+              if (this._armedStaffMode === 'same') {
+                this._reservando = true;
+                this._enviarAgregarServicio(this._armed, null);
+              } else {
+                this._toast(`Cita creada · elige columna para ${this._armed.servicio.label}`);
+                this._sendToPage('getReservas', { fecha: this._fecha });
+              }
+              break;
+            }
             this._toast(`Reserva creada · ${p.precioTotal}€`);
             this._desarmar();
             this._sendToPage('getReservas', { fecha: this._fecha });
@@ -2166,6 +3478,23 @@ button { font-family: inherit; cursor: pointer; }
           break;
         // v1.1.51 — F4/F5 auto-detección bonos/tarjetas del cliente
         case 'productosCustomCliente':
+          // v1.1.96 — el panel y el modal de cobro comparten este canal y
+          // pueden estar sobre clientes distintos. El backend v1.0.49
+          // devuelve contactId: cada respuesta va a quien la pidió.
+          if (p.ok && p.contactId && this._cliente && this._cliente.contactId === p.contactId) {
+            this._chipsCliente = {
+              contactId: p.contactId,
+              prime: p.prime || null,
+              bonos: Array.isArray(p.bonos) ? p.bonos : [],
+              tarjetas: Array.isArray(p.tarjetas) ? p.tarjetas : [],
+              comprasProductos: p.comprasProductos || null
+            };
+            this._renderClienteSelected();
+          }
+          // Si hay un modal de cobro abierto de OTRO cliente, no pisar sus
+          // bonos con los de este.
+          if (this._modalReserva && p.contactId && this._modalReserva.contactId
+              && this._modalReserva.contactId !== p.contactId) break;
           if (p.ok) {
             this._productosCliente = {
               prime: p.prime || null,
@@ -2227,9 +3556,31 @@ button { font-family: inherit; cursor: pointer; }
           else this._toast('Error: ' + (p.error || 'no se pudo reprogramar'));
           break;
         case 'fase-movida':
+          // v1.1.81 — si la cadena del armado está reubicando las fases del
+          // servicio recién añadido, encadenar el siguiente movimiento antes
+          // de nada. Van de uno en uno a propósito (ver _enviarSiguienteMovimiento).
+          if (this._chainActivo && this._chainMoving) {
+            if (!p.ok) this._toast('Aviso: no se pudo colocar una fase (' + (p.error || '') + ')');
+            if (this._moveQueue.length) { this._enviarSiguienteMovimiento(); break; }
+            this._chainMoving = false;
+            this._avanzarCadena();
+            break;
+          }
           // v1.1.29 — drag&drop por fase
           if (p.ok) { this._toast('Fase movida ✓'); this._sendToPage('getReservas', { fecha: this._fecha }); }
           else this._toast('Error: ' + (p.error || 'no se pudo mover la fase'));
+          break;
+        case 'fase-extendida':
+          // v1.1.89 — extensión rayada por fase
+          if (p.ok) {
+            this._toast(p.extMin > 0 ? `Extensión: +${p.extMin} min` : 'Extensión quitada');
+            this._sendToPage('getReservas', { fecha: this._fecha });
+          } else this._toast('Error: ' + (p.error || 'no se pudo extender'));
+          break;
+        case 'fase-redimensionada':
+          // v1.1.65 — redimensionar duración de fase (empuja las posteriores)
+          if (p.ok) { this._toast('Duración ajustada ✓'); this._sendToPage('getReservas', { fecha: this._fecha }); }
+          else this._toast('Error: ' + (p.error || 'no se pudo ajustar la duración'));
           break;
         case 'extra-agregado':
           if (p.ok) { this._toast(`Extra añadido (+${p.precioTotal}€ total)`); this._closeSubModal(); this._closeModal(); this._sendToPage('getReservas', { fecha: this._fecha }); }
@@ -2237,12 +3588,72 @@ button { font-family: inherit; cursor: pointer; }
           break;
         case 'complemento-agregado':
           if (p.ok) { this._toast(`Complemento añadido: ${p.label}`); this._closeSubModal(); this._closeModal(); this._sendToPage('getReservas', { fecha: this._fecha }); }
-          else this._toast('Error: ' + (p.error || 'no se pudo añadir complemento'));
+          else {
+            this._toast('Error: ' + (p.error || 'no se pudo añadir complemento'));
+            // v1.1.83 — rehabilitar el botón para poder reintentar sin cerrar.
+            const bCmp = this.shadowRoot.getElementById('cmOk');
+            if (bCmp) bCmp.disabled = false;
+          }
           break;
         case 'servicio-agregado':
+          // v1.1.81 — dos orígenes posibles para esta respuesta:
+          //   · cadena del armado múltiple (_chainActivo) → seguir la cadena
+          //   · botón "+ Servicio adicional" del modal → comportamiento v1.1.30
+          if (this._chainActivo) {
+            this._reservando = false;
+            if (!p.ok) {
+              // La cita creada NO se toca: se corta la cadena y se avisa de
+              // qué servicio ha fallado, con el motivo del backend.
+              this._toast('Error añadiendo servicio: ' + (p.error || 'desconocido'));
+              this._desarmar();
+              this._sendToPage('getReservas', { fecha: this._fecha });
+              break;
+            }
+            {
+              const mv = this._pendingMove;
+              this._pendingMove = null;
+              if (mv) this._prepararMovimientos(p.fasesNuevas, mv);
+            }
+            if (this._moveQueue.length) { this._enviarSiguienteMovimiento(); break; }
+            this._avanzarCadena();
+            break;
+          }
           // v1.1.30 — + Servicio adicional
           if (p.ok) { this._toast(`Servicio añadido: ${p.label} (+${p.precio}€)`); this._closeSubModal(); this._closeModal(); this._sendToPage('getReservas', { fecha: this._fecha }); }
-          else this._toast('Error: ' + (p.error || 'no se pudo añadir servicio'));
+          else {
+            this._toast('Error: ' + (p.error || 'no se pudo añadir servicio'));
+            // v1.1.81 — reactivar el botón: antes quedaba deshabilitado tras
+            // un error y había que cerrar el modal para reintentar.
+            const bAdd = this.shadowRoot.getElementById('svOk');
+            if (bAdd) bAdd.disabled = false;
+          }
+          break;
+        // v1.1.85 — documentos de la venta de TIENDA
+        case 'ticketVentaGenerado':
+        case 'facturaVentaGenerada': {
+          this._ventaGenerando = false;
+          if (p.ok) {
+            this._ventaDoc = {
+              modo: p.modo || (p.type === 'ticketVentaGenerado' ? 'ticket' : 'factura'),
+              invoiceNumber: p.invoiceNumber || '',
+              pdfUrl: p.pdfUrl || ''
+            };
+            this._toast(p.duplicado ? 'Esta venta ya tenía documento' : `Documento emitido · ${p.invoiceNumber || ''}`);
+          } else {
+            this._toast('Error: ' + (p.error?.message || p.error || 'no se pudo emitir'));
+          }
+          this._renderVentaDocPanel();
+          break;
+        }
+        case 'documentoVenta':
+          if (p.ok && p.existe && p.documento) {
+            this._ventaDoc = {
+              modo: p.documento.modo,
+              invoiceNumber: p.documento.invoiceNumber || '',
+              pdfUrl: p.documento.pdfUrl || ''
+            };
+            this._renderVentaDocPanel();
+          }
           break;
         case 'producto-agregado':
           // v1.1.16 legacy — ya no se usa, mantenemos por compatibilidad
@@ -2250,6 +3661,20 @@ button { font-family: inherit; cursor: pointer; }
         case 'productos-venta-result':
           if (p.ok) {
             this._toast('Venta de productos registrada ✓');
+            // v1.1.85 — venta desde TIENDA: el modal se queda abierto para
+            // emitir ticket o factura. La clave del documento es el orderId,
+            // que es el bookingId con el que el cobro entra en
+            // PaymentReservations.
+            if (this._ventaTiendaActiva) {
+              const pl = p.payload || {};
+              this._ventaTiendaKey = String(pl.orderId || '');
+              this._ventaTiendaTotal = Number(pl.total) || 0;
+              this._ventaDoc = null;
+              this._ventaForm = false;
+              this._ventaGenerando = false;
+              this._renderVentaDocPanel();
+              break;
+            }
             this._closeProductoModal();
             this._closeModal();
             this._sendToPage('getReservas', { fecha: this._fecha });
@@ -2263,6 +3688,35 @@ button { font-family: inherit; cursor: pointer; }
         case 'productos-cargados':
           this._renderProductosModal(p.productos || []);
           break;
+        // v1.1.90 — Peso fijado en una línea (tarifa por gramo).
+        // REGLA UX: el modal NO se cierra ni se recarga. Se actualiza el
+        // estado local (línea + total) y se repinta en caliente; la agenda
+        // de detrás se refresca en segundo plano.
+        case 'line-weight-set': {
+          if (p.ok) {
+            const rMod = this._modalReserva;
+            if (rMod && rMod._id === p.reservaId) {
+              rMod.serviciosDetail = p.serviciosDetail;
+              rMod.precioTotal = p.precioTotal;
+              rMod.lineWeights = p.lineWeights || [];
+            }
+            const rLista = (this._reservas || []).find(x => x._id === p.reservaId);
+            if (rLista) {
+              rLista.serviciosDetail = p.serviciosDetail;
+              rLista.precioTotal = p.precioTotal;
+              rLista.lineWeights = p.lineWeights || [];
+            }
+            this._toast(p.grams > 0
+              ? `${p.grams} g × ${p.precioGramo} €/g = ${p.precioLinea}€`
+              : 'Peso quitado · línea a 0€');
+            if (rMod && rMod._id === p.reservaId) this._renderModal();
+            this._sendToPage('getReservas', { fecha: this._fecha });
+          } else {
+            this._toast('Error: ' + (p.error || 'no se pudo fijar el peso'));
+            this.shadowRoot.querySelectorAll('.ks-weight-ok').forEach(b => b.disabled = false);
+          }
+          break;
+        }
         case 'item-quitado':
           if (p.ok) {
             this._toast(`Quitado · -${p.subtotalRemoved}€`);
@@ -2282,10 +3736,40 @@ button { font-family: inherit; cursor: pointer; }
           break;
         }
         case 'clientesEncontrados': this._renderCliResults(p.clientes || []); break;
+        // v1.1.69 — ESPECIALES (venta manual)
+        case 'espClientesEncontrados': this._renderEspCli(p.clientes || []); break;
+        case 'ftClientesEncontrados': this._fcRenderCli(p.clientes || []); break;
+        // v1.1.97 — FICHA DEL CLIENTE (popup del modal de la cita)
+        case 'fichaClienteRecords':   this._onFichaClienteRecords(p); break;
+        case 'fichaClienteGuardada':  this._onFichaClienteGuardada(p); break;
+        case 'fichaClienteQuitada':   this._onFichaClienteQuitada(p); break;
+        case 'espClienteCreado': this._onEspClienteCreado(p.data); break;
+        // v1.1.76 — ALMACÉN
+        case 'almacenData':     this._onAlmData(p); break;
+        case 'almacenAccion':   this._onAlmAccion(p); break;
+        case 'especialesData': this._onEspData(p); break;
+        case 'bonoEmitido': this._onEspEmitido('bono', p.data); break;
+        case 'primeEmitido': this._onEspEmitido('prime', p.data); break;
+        case 'tarjetaEmitido': this._onEspEmitido('tarjeta', p.data); break;
         case 'clienteCreado': {
           const r = p.data || {};
-          if (r.ok && r.cliente) { this._closeBlankForm(); this._seleccionarCliente(r.cliente); this._toast('Cliente creado'); }
-          else { this._toast('Error: ' + (r.error?.message || 'no se pudo crear')); }
+          if (r.ok && r.cliente) {
+            this._closeBlankForm();
+            this._seleccionarCliente(r.cliente);
+            this._toast('Cliente creado');
+            // v1.1.84 — si el alta venía del botón TIENDA, encadenar la venta.
+            if (this._tiendaEsperandoCliente) {
+              this._tiendaEsperandoCliente = false;
+              this._abrirVentaTienda();
+            }
+          } else {
+            this._toast('Error: ' + (r.error?.message || 'no se pudo crear'));
+            if (this._tiendaEsperandoCliente) {
+              this._tiendaEsperandoCliente = false;
+              const bTd = this.shadowRoot.getElementById('tdOk');
+              if (bTd) bTd.disabled = false;
+            }
+          }
           break;
         }
         // v1.1.33 — Respuesta al editar contacto.
@@ -2319,6 +3803,16 @@ button { font-family: inherit; cursor: pointer; }
         case 'caja-cerrada':
           if (p.ok) { this._toast('Caja cerrada ✓'); this._cajaRefresh(); }
           else this._toast('Error: ' + (p.error || 'no se pudo cerrar'));
+          break;
+        // v1.1.94 — confirmación de datáfono / Bizum
+        case 'caja-metodo-confirmado':
+          if (p.ok) {
+            const que = p.metodo === 'bizum' ? 'Bizum' : 'Datáfono';
+            this._toast(p.confirmado ? `${que} confirmado ✓` : `${que} sin confirmar`);
+            this._cajaRefresh();
+          } else {
+            this._toast('Error: ' + (p.error || 'no se pudo confirmar'));
+          }
           break;
         case 'caja-movimiento-ok':
           if (p.ok) { this._toast('Movimiento registrado'); this._cajaRefresh(); }
@@ -2422,6 +3916,11 @@ button { font-family: inherit; cursor: pointer; }
           }
           if (this._modalReserva) this._renderFacturaSlot();
           break;
+        // ─── v1.1.63: nombres del salón para el texto copiable ───
+        case 'salonNombres':
+          this._salonBrandName = p.brandName || '';
+          this._salonLegalName = p.legalName || '';
+          break;
         // ─── v1.1.45: capa de acceso ───
         case 'usersActivation':
           this._usersActivationRecibido = true;   // v1.1.46 — detiene el retry
@@ -2445,6 +3944,25 @@ button { font-family: inherit; cursor: pointer; }
           break;
         case 'pinValidated':
           this._onPinValidated(p);
+          break;
+        // ─── v1.1.71: apertura de caja (fondo inicial del día) ───
+        case 'caja-fondo-sugerido':
+          this._onFondoSugerido(p);
+          break;
+        case 'caja-abierta':
+          this._onCajaAbierta(p);
+          break;
+        case 'apertura-estado':
+          // Informativo: módulo inactivo, o ya hay caja hoy. Nada que pintar.
+          break;
+        // v1.1.73 — fondo inicial forzado desde el arqueo
+        case 'caja-fondo-guardado':
+          if (p && p.ok) {
+            this._toast(`Fondo inicial forzado: ${Number((p.registro && p.registro.openingBalance) || 0)}€`);
+            this._cajaRefresh();
+          } else {
+            this._toast(`No se pudo forzar el fondo${p && p.error ? ': ' + p.error : ''}`);
+          }
           break;
         default: break;
       }
@@ -2527,7 +4045,7 @@ button { font-family: inherit; cursor: pointer; }
             <div class="settings-body">
               <div class="settings-section">
                 <div class="settings-section-title">Espaciado</div>
-                <div class="slider-row"><label>Compacto</label><input type="range" id="sliderSpacing" min="28" max="84" value="56"><label>Amplio</label></div>
+                <div class="slider-row"><label>Compacto</label><input type="range" id="sliderSpacing" min="24" max="160" value="56"><label>Amplio</label></div>
               </div>
               <div class="settings-section">
                 <div class="settings-section-title">Título cita</div>
@@ -2539,8 +4057,8 @@ button { font-family: inherit; cursor: pointer; }
               <div class="settings-section">
                 <div class="settings-section-title">Intervalo</div>
                 <div class="option-group">
-                  <label class="option-item"><input type="radio" name="interval" value="30" checked>30 min</label>
-                  <label class="option-item"><input type="radio" name="interval" value="15">15 min</label>
+                  <label class="option-item"><input type="radio" name="interval" value="30">30 min</label>
+                  <label class="option-item"><input type="radio" name="interval" value="15" checked>15 min</label>
                   <label class="option-item"><input type="radio" name="interval" value="10">10 min</label>
                 </div>
               </div>
@@ -2570,9 +4088,11 @@ button { font-family: inherit; cursor: pointer; }
             </div>
             <div class="ks-brandhint">Recepción PRO · agenda operativa · CMS-first</div>
             <div class="ks-brandactions">
-              <button class="ks-akira">✦ AKIRA</button>
+              <button class="ks-tienda" id="tiendaBtn">🛍 TIENDA</button>
+              <button class="ks-fichatec" id="ftBtn">🎨 FICHA TÉCNICA</button>
+              <button class="ks-almacen" id="almBtn">🗄️ ALMACÉN</button>
+              <button class="ks-especiales" id="espBtn">✦ ESPECIALES</button>
               <button class="ks-automodel">Modelo automático</button>
-              <button class="ks-homebtn" title="Inicio">⌂</button>
             </div>
           </div>
           <div class="ks-toolbar">
@@ -2673,9 +4193,33 @@ button { font-family: inherit; cursor: pointer; }
         clearTimeout(this._reloadSpinTimer);
         this._reloadSpinTimer = setTimeout(() => btn.classList.remove('is-spinning'), 5000);
       });
-      root.getElementById('btnArqueo').addEventListener('click', () => this._openCaja('arqueo'));
-      root.getElementById('btnCierre').addEventListener('click', () => this._toggleCierre());
-      root.getElementById('btnAjustes').addEventListener('click', () => this._openSettings());
+      root.getElementById('btnArqueo').addEventListener('click', () => {
+        if (!this._puede('arqueo')) { this._toast('No tienes permiso para esta acción'); return; }
+        this._openCaja('arqueo');
+      });
+      root.getElementById('btnCierre').addEventListener('click', () => {
+        if (!this._puede('cierre')) { this._toast('No tienes permiso para esta acción'); return; }
+        this._toggleCierre();
+      });
+      root.getElementById('btnAjustes').addEventListener('click', () => {
+        if (!this._puede('ajustes')) { this._toast('No tienes permiso para esta acción'); return; }
+        this._openSettings();
+      });
+
+      // v1.1.69 — ESPECIALES: venta manual de PRIME/Bonos/Tarjetas
+      const espBtnEl = root.getElementById('espBtn');
+      if (espBtnEl) espBtnEl.addEventListener('click', () => this._openEspeciales());
+
+      // v1.1.76 — ALMACÉN: papelera y sacar de almacén
+      const almBtnEl = root.getElementById('almBtn');
+      if (almBtnEl) almBtnEl.addEventListener('click', () => this._openAlmacen());
+
+      // v1.1.77 — FICHA TÉCNICA
+      const ftBtnEl = root.getElementById('ftBtn');
+      if (ftBtnEl) ftBtnEl.addEventListener('click', () => this._openFichaTecnica());   // v1.1.99 — ficha única
+      // v1.1.84 — TIENDA: venta de productos a alguien que entra sin cita.
+      const tiendaBtnEl = root.getElementById('tiendaBtn');
+      if (tiendaBtnEl) tiendaBtnEl.addEventListener('click', () => this._openTiendaModal());
 
       // ── Datepicker (V1) ──
       const openDp = (e) => { e.stopPropagation(); this._openDatePicker(); };
@@ -2689,7 +4233,7 @@ button { font-family: inherit; cursor: pointer; }
       root.getElementById('settingsOverlay').addEventListener('click', () => this._closeSettings());
       root.getElementById('btnCloseSettings').addEventListener('click', () => this._closeSettings());
       root.getElementById('btnResetSettings').addEventListener('click', () => {
-        this._settings = { rowHeight: 56, titleMode: 'servicio', interval: 30, staffConfig: {} };
+        this._settings = { rowHeight: 56, titleMode: 'servicio', interval: 15, staffConfig: {} };
         this._initStaffConfig();
         this._applySettingsUI();
         this._renderStaffSettings();
@@ -2847,6 +4391,11 @@ button { font-family: inherit; cursor: pointer; }
       root.getElementById('cliClear').style.display = 'none';
       this._renderClienteSelected();
       this._updateSteps();
+      // v1.1.96 — pedir lo que ya tiene contratado para pintar los chips
+      this._chipsCliente = null;
+      if (this._cliente.contactId) {
+        this._sendToPage('getProductosCustom', { contactId: this._cliente.contactId });
+      }
     }
     _renderClienteSelected() {
       const root = this.shadowRoot;
@@ -2881,13 +4430,44 @@ button { font-family: inherit; cursor: pointer; }
 
       sel.innerHTML = `<div class="ks-cli-selected">
         <div style="flex:1;"><div class="ks-cli-sname">${esc(c.nombre)}${prov}</div>
-        <div class="ks-cli-ssub">${sub}</div>${warnBanner}</div>
+        <div class="ks-cli-ssub">${sub}</div>${warnBanner}${this._chipsClienteHTML()}</div>
         <div style="display:flex;align-items:center;">${btnEdit}<button class="ks-cli-srm" id="cliRm">✕</button></div></div>`;
       sel.querySelector('#cliRm').addEventListener('click', () => { this._cliente = null; sel.innerHTML = ''; this._updateSteps(); });
       if (puedeEditar) {
         sel.querySelector('#cliEdit').addEventListener('click', () => this._openEditarCliente(c));
       }
     }
+    // v1.1.96 — Chips de lo que el cliente YA tiene contratado. Se pintan
+    // solo cuando la respuesta corresponde a este mismo cliente; mientras
+    // no ha llegado, no se pinta nada (no hay hueco ni parpadeo).
+    _chipsClienteHTML() {
+      const c = this._cliente;
+      const cp = this._chipsCliente;
+      if (!c || !cp || cp.contactId !== c.contactId) return '';
+      const chips = [];
+
+      if (cp.prime) {
+        chips.push(`<span class="ks-cchip is-prime">⭐ PRIME</span>`);
+      }
+      for (const b of (cp.bonos || [])) {
+        const usos = (b.remainingUses != null && b.totalUses)
+          ? ` <span class="ks-cchip-n">${b.remainingUses}/${b.totalUses}</span>` : '';
+        const svc = b.serviceLabel || b.code || 'Bono';
+        chips.push(`<span class="ks-cchip is-bono" title="${esc(b.code || '')}">🎟️ ${esc(svc)}${usos}</span>`);
+      }
+      for (const t of (cp.tarjetas || [])) {
+        chips.push(`<span class="ks-cchip is-promo" title="${esc(t.code || '')}">🎁 ${esc(t.serviceLabel || 'Tarjeta')}</span>`);
+      }
+      const compras = cp.comprasProductos;
+      if (compras && compras.veces > 0) {
+        const veces = compras.veces === 1 ? '1 compra' : `${compras.veces} compras`;
+        chips.push(`<span class="ks-cchip is-prod" title="${esc(compras.ultimoProducto || '')}">🛍 ${veces} · ${Math.round(compras.total)}€</span>`);
+      }
+
+      if (!chips.length) return '';
+      return `<div class="ks-cchips">${chips.join('')}</div>`;
+    }
+
     // v1.1.34 — Detección de ficha incompleta (patrón V1 literal de
     // kamisuite-agenda v2.0.5). Banner en sidebar cliente + modal cita.
     // Los emails genéricos del salón se tratan como "vacío" porque no
@@ -3079,6 +4659,9 @@ button { font-family: inherit; cursor: pointer; }
     _buildGroups() {
       const q = (this._query || '').trim().toLowerCase();
       const visible = this._servicios.filter(s => {
+        // v1.1.82 — "Complementos de fases" fuera del listado, salvo que el
+        // operador pida expresamente la pestaña Complementos.
+        if (this._role !== 'complemento' && normGrupo(s.group) === GRUPO_OCULTO_PANEL) return false;
         if (this._role === 'principal' && s.tipo === 'complemento') return false;
         if (this._role === 'complemento' && s.tipo === 'principal') return false;
         if (q && !(s.label || '').toLowerCase().includes(q)) return false;
@@ -3173,7 +4756,7 @@ button { font-family: inherit; cursor: pointer; }
     }
     _tryParse(s) { try { return JSON.parse(s); } catch (e) { return []; } }
 
-    _openDetail(svc, x, y) { this._detail = svc; this._variantIdx = 0; this._complSel = {}; this._renderDetail(x, y); }
+    _openDetail(svc, x, y) { this._detail = svc; this._variantIdx = 0; this._complSel = {}; this._exclusivosSel = {}; this._cantidad = 1; this._renderDetail(x, y); }
     _closeDetail() { this._detail = null; const r = this.shadowRoot; r.getElementById('detailScrim')?.remove(); r.getElementById('detailPop')?.remove(); }
 
     _renderDetail(x, y) {
@@ -3205,7 +4788,19 @@ button { font-family: inherit; cursor: pointer; }
           <div class="ks-cascade-legend"><span class="ks-cascade-legitem"><span class="ks-leg-sw work"></span>Ocupado</span><span class="ks-cascade-legitem"><span class="ks-leg-sw proceso"></span>PROCESO libre</span><span class="ks-cascade-total">${total} min</span></div>
           <p class="ks-detail-note">Durante el <strong>PROCESO</strong> la columna no se ocupa: el profesional queda libre para otra cita.</p></div>` : '';
 
-      const comps = Array.isArray(s.complementos) ? s.complementos : [];
+      // v1.1.81 — ¿Estamos AÑADIENDO una línea a un armado ya iniciado?
+      // Si _armed existe, este popup no arma una cita nueva: encola otro
+      // servicio dentro de la misma cita.
+      const enCola = !!this._armed;
+
+      const compsAll = Array.isArray(s.complementos) ? s.complementos : [];
+      // v1.1.81 — En modo "añadir a la cita" los complementos OPCIONALES no
+      // se ofrecen: elegirlos línea a línea haría el popup inmanejable
+      // (premisa de diseño). Los OBLIGATORIOS con variantes (CASO B, tipo
+      // Planchado M/L/XL dentro del Botox) SÍ se mantienen: sin esa
+      // elección el motor no puede construir las fases del servicio y la
+      // línea fallaría con "Falta elegir variante de: …".
+      const comps = enCola ? compsAll.filter(c => c && c.required) : compsAll;
       // v1.1.44 — Complementos. Dos casos:
       //   · Sin variantes → botón toggle (sí/no), como siempre.
       //   · Con variantes → una fila por variante (chips). Si el complemento
@@ -3213,7 +4808,7 @@ button { font-family: inherit; cursor: pointer; }
       //     variante para poder armar (no hay "no añadir"). Si es opcional,
       //     elegir una variante lo añade; volver a pulsarla lo quita.
       const complHTML = comps.length ? `
-        <div class="ks-detail-block"><div class="ks-detail-blocklbl">Complementos</div>
+        <div class="ks-detail-block"><div class="ks-detail-blocklbl">Complementos${enCola ? ' <span class="ks-detail-blocklbl-hint">solo obligatorios al encadenar</span>' : ''}</div>
           ${comps.map(c => {
             const cvars = Array.isArray(c.variantes) ? c.variantes : [];
             if (c.hasVariants && cvars.length) {
@@ -3237,6 +4832,58 @@ button { font-family: inherit; cursor: pointer; }
             return `<div class="ks-variant-list"><button class="ks-variant ks-compl ${this._complSel[c.setupUid] ? 'active' : ''}" data-cuid="${esc(c.setupUid)}" style="display:flex;justify-content:space-between"><span>⛓ ${esc(c.label)}</span><span class="ks-dur">${c.price ? c.price + '€' : '—'} · ${c.duration || 0}′</span></button></div>`;
           }).join('')}</div>` : '';
 
+      // v1.1.59 — Bloque de GRUPOS EXCLUSIVOS del mapeoFases.
+      // Cada item tipo:'exclusivo' se pinta como un mini-selector con
+      // botones radio-like: primero "No añadir", luego una opción por
+      // cada ref válido. Estado en this._exclusivosSel[groupKey] (uid
+      // del elegido) o ausencia si es "No añadir".
+      const mapeoParaExcl = Array.isArray(s.mapeoFases)
+        ? s.mapeoFases
+        : (typeof s.mapeoFases === 'string' ? this._tryParse(s.mapeoFases) : []);
+      const exclusivos = Array.isArray(mapeoParaExcl)
+        ? mapeoParaExcl
+            .map((f, idx) => ({ f, idx }))
+            .filter(x => x.f && x.f.tipo === 'exclusivo' && Array.isArray(x.f.refs) && x.f.refs.length > 0)
+        : [];
+      // v1.1.81 — los grupos exclusivos son elección opcional: se ocultan
+      // al encadenar líneas, por la misma premisa que los complementos.
+      const exclHTML = (exclusivos.length && !enCola) ? `
+        <div class="ks-detail-block"><div class="ks-detail-blocklbl">Grupos exclusivos <span class="ks-detail-blocklbl-hint">elige uno o ninguno</span></div>
+          ${exclusivos.map(({ f, idx }) => {
+            const groupKey = 'exc:' + idx;
+            const selUid = this._exclusivosSel && this._exclusivosSel[groupKey];
+            const opts = f.refs
+              .map(r => this._porSetupUid[r])
+              .filter(Boolean);
+            const labelGrupo = (typeof f.label === 'string' && f.label.trim()) ? f.label.trim() : 'Grupo';
+            const noneActive = !selUid;
+            return `<div style="margin-bottom:8px">
+              <div class="ks-detail-blocklbl" style="font-size:11px;margin:4px 0;color:#ff8a8a">🎯 ${esc(labelGrupo)}</div>
+              <div class="ks-variant-list">
+                <button class="ks-variant ks-excl-opt ${noneActive ? 'active' : ''}" data-gk="${esc(groupKey)}" data-uid="" style="display:flex;justify-content:space-between;align-items:center"><span>No añadir</span><span class="ks-dur">—</span></button>
+                ${opts.map(svcRef => {
+                  const isSel = selUid === svcRef.setupUid;
+                  const priceTxt = (svcRef.price != null && svcRef.price > 0) ? `${svcRef.price}€` : '—';
+                  const durTxt = svcRef.duration ? `${svcRef.duration}′` : '';
+                  return `<button class="ks-variant ks-excl-opt ${isSel ? 'active' : ''}" data-gk="${esc(groupKey)}" data-uid="${esc(svcRef.setupUid)}" style="display:flex;justify-content:space-between;align-items:center"><span>${esc(svcRef.label || '')}</span><span class="ks-dur">${priceTxt}${durTxt ? ' · ' + durTxt : ''}</span></button>`;
+                }).join('')}
+              </div>
+            </div>`;
+          }).join('')}</div>` : '';
+
+      // v1.1.81 — CANTIDAD. Caso real: una madre trae dos niños al mismo
+      // corte. Cantidad 2 = el servicio se encadena dos veces detrás de sí
+      // mismo según su duración, dentro de la MISMA cita: un total, un
+      // cobro, un solo aviso al cliente.
+      const cantidadHTML = `
+        <div class="ks-detail-block"><div class="ks-detail-blocklbl">Cantidad</div>
+          <div class="ks-qty-row">
+            <button class="ks-variant ks-qty-btn" id="dQtyMinus" aria-label="Quitar uno">−</button>
+            <span class="ks-qty-val" id="dQtyVal">${this._cantidad}</span>
+            <button class="ks-variant ks-qty-btn" id="dQtyPlus" aria-label="Añadir uno">＋</button>
+            <span class="ks-dur" id="dQtyHint">${this._cantidad > 1 ? this._cantidad + ' pases encadenados' : 'un solo pase'}</span>
+          </div></div>`;
+
       const scrim = document.createElement('div'); scrim.className = 'ks-detail-scrim'; scrim.id = 'detailScrim';
       scrim.addEventListener('click', () => this._closeDetail());
       const pop = document.createElement('div'); pop.className = 'ks-detail'; pop.id = 'detailPop'; pop.style.setProperty('--fam', fam);
@@ -3250,12 +4897,13 @@ button { font-family: inherit; cursor: pointer; }
           <div class="ks-detail-tags"><span class="ks-clasetag ${cascade ? 'is-cascade' : (s.claseServicio === 'simple_variantes' ? 'is-variants' : '')}">${cascade ? '⛓ ' : ''}${CLASE_LABEL[s.claseServicio] || 'Simple'}</span><span class="ks-detail-dur">${s.duration || 0} min</span>${s.price ? `<span class="ks-detail-price">${s.price}€</span>` : ''}</div>
         </div>
         <div class="ks-detail-body">
-          ${s.descripcion ? `<p class="ks-detail-note ks-detail-note-simple" style="margin-top:0">${esc(s.descripcion)}</p>` : ''}
-          ${variantHTML}${cascadeHTML}${complHTML}
-          <p class="ks-detail-note ks-detail-note-simple">Pulsa <strong>Armar servicio</strong> y haz clic en la columna del empleado y la hora en el calendario.</p>
+          ${variantHTML}${complHTML}${exclHTML}${cantidadHTML}
+          <p class="ks-detail-note ks-detail-note-simple">${enCola
+            ? 'Se añadirá a la cita que estás montando, detrás del servicio anterior según su duración.'
+            : 'Pulsa <strong>Armar servicio</strong> y haz clic en la columna del empleado y la hora en el calendario.'}</p>
           <div class="ks-detail-uid">setupUid · <code>${esc(s.setupUid)}</code></div>
         </div>
-        <div class="ks-detail-foot"><button class="ks-detail-cancel" id="dCancel">Cancelar</button><button class="ks-detail-add" id="dAdd">Armar servicio</button></div>`;
+        <div class="ks-detail-foot"><button class="ks-detail-cancel" id="dCancel">Cancelar</button><button class="ks-detail-add" id="dAdd">${enCola ? '＋ Añadir a la cita' : 'Armar servicio'}</button></div>`;
       root.appendChild(scrim); root.appendChild(pop);
       // v1.1.18 — Reposicionar verticalmente si la altura real desborda
       // la ventana (caso típico con muchos complementos asignados).
@@ -3297,12 +4945,51 @@ button { font-family: inherit; cursor: pointer; }
           b.classList.toggle('active', !!act);
         });
       }));
+      // v1.1.59 — GRUPO EXCLUSIVO. Opciones del grupo con radio-like:
+      // click en una opción la selecciona (deseleccionando cualquier otra
+      // del mismo grupo). Si es "No añadir" (data-uid vacío), borra la
+      // selección del grupo. Estado en this._exclusivosSel[groupKey].
+      pop.querySelectorAll('.ks-excl-opt').forEach(btn => btn.addEventListener('click', () => {
+        const gk = btn.getAttribute('data-gk');
+        const uid = btn.getAttribute('data-uid') || '';
+        if (!this._exclusivosSel) this._exclusivosSel = {};
+        if (uid) this._exclusivosSel[gk] = uid;
+        else delete this._exclusivosSel[gk];
+        pop.querySelectorAll(`.ks-excl-opt[data-gk="${gk}"]`).forEach(b => {
+          b.classList.toggle('active', b === btn);
+        });
+      }));
+      // v1.1.81 — stepper de cantidad. No re-renderiza el popup entero
+      // (perdería el scroll y las variantes marcadas): solo repinta el
+      // número y la coletilla.
+      {
+        const val = pop.querySelector('#dQtyVal');
+        const hint = pop.querySelector('#dQtyHint');
+        const pinta = () => {
+          if (val) val.textContent = String(this._cantidad);
+          if (hint) hint.textContent = this._cantidad > 1 ? `${this._cantidad} pases encadenados` : 'un solo pase';
+        };
+        pop.querySelector('#dQtyMinus')?.addEventListener('click', () => {
+          this._cantidad = Math.max(1, (Number(this._cantidad) || 1) - 1); pinta();
+        });
+        pop.querySelector('#dQtyPlus')?.addEventListener('click', () => {
+          this._cantidad = Math.min(CANT_MAX_LINEA, (Number(this._cantidad) || 1) + 1); pinta();
+        });
+      }
       pop.querySelector('#dAdd').addEventListener('click', () => this._armarServicio());
     }
 
     _armarServicio() {
       if (!this._detail) return;
       if (!this._cliente || !this._cliente.nombre) { this._toast('Selecciona o crea un cliente primero'); return; }
+      // v1.1.81 — El servicio A MEDIDA va por otro circuito
+      // ('servicio-medida' → crearReservaMedida) y no participa en la
+      // cadena de agregar-servicio. No se encadena nada sobre él: si se
+      // permitiera, las líneas encoladas quedarían huérfanas.
+      if (this._armed && this._armed.medida) {
+        this._toast('Coloca primero el servicio a medida · luego añade el resto');
+        return;
+      }
 
       // v1.1.44 — Construir la lista de complementos elegidos. Cada entrada de
       // _complSel puede ser:
@@ -3337,21 +5024,152 @@ button { font-family: inherit; cursor: pointer; }
         }
       }
 
-      this._armed = { servicio: this._detail, variantIdx: this._variantIdx, complementosSetupUid };
+      // v1.1.59 — GRUPO EXCLUSIVO: añadir opciones elegidas al array
+      // `complementosSetupUid` antes de armar. Recorre los items
+      // tipo:'exclusivo' del mapeoFases; si hay elección guardada en
+      // this._exclusivosSel[groupKey] (uid), la empuja con el mismo
+      // shape que las variantes de complemento (patrón v1.1.44). El
+      // motor recepcionProLogic v1.0.34 (rama tipo:'exclusivo' de
+      // construirFasesPack) detecta el uid dentro de f.refs y
+      // materializa el servicio en la posición del grupo.
+      const mapeoArm = Array.isArray(this._detail.mapeoFases)
+        ? this._detail.mapeoFases
+        : (typeof this._detail.mapeoFases === 'string' ? this._tryParse(this._detail.mapeoFases) : []);
+      if (Array.isArray(mapeoArm) && this._exclusivosSel) {
+        mapeoArm.forEach((f, idx) => {
+          if (!f || f.tipo !== 'exclusivo') return;
+          const gk = 'exc:' + idx;
+          const uidElegido = this._exclusivosSel[gk];
+          if (!uidElegido) return;
+          const svcRef = this._porSetupUid[uidElegido];
+          if (!svcRef) return;
+          complementosSetupUid.push({
+            uid: svcRef.setupUid,
+            varianteId: svcRef.setupUid,
+            varianteLabel: svcRef.label || '',
+            price: Number(svcRef.price) || 0,
+            duration: Number(svcRef.duration) || 0
+          });
+        });
+      }
+
+      // v1.1.81 — ARMADO MÚLTIPLE + CANTIDAD.
+      // La línea armada se repite `cantidad` veces. La PRIMERA de todas
+      // ocupa this._armed (crea la cita con crearPackReserva, con sus
+      // variantes y complementos). Las demás esperan en _armedQueue y se
+      // añaden a esa misma cita con `agregar-servicio`.
+      const cantidad = Math.max(1, Math.min(CANT_MAX_LINEA, Number(this._cantidad) || 1));
+      const linea = {
+        servicio: this._detail,
+        variantIdx: this._variantIdx,
+        complementosSetupUid
+      };
+
+      let nuevas = 0;
+      for (let i = 0; i < cantidad; i++) {
+        // Copia superficial por línea: cada una viaja al backend por
+        // separado y no deben compartir el array de complementos.
+        const copia = {
+          servicio: linea.servicio,
+          variantIdx: linea.variantIdx,
+          complementosSetupUid: complementosSetupUid.slice()
+        };
+        if (!this._armed) this._armed = copia;
+        else this._armedQueue.push(copia);
+        nuevas++;
+      }
+
       this._closeDetail();
       this._renderArmedHint();
       this._renderCalendar();
       this._updateSteps();
-      this._toast('Servicio armado · clic en el calendario para colocar');
+
+      const totalLineas = 1 + this._armedQueue.length;
+      if (totalLineas > 1) {
+        // _toast usa textContent: nada que escapar, y esc() metería entidades.
+        this._toast(`${linea.servicio.label} ×${nuevas} · ${totalLineas} servicios en la cita`);
+      } else {
+        this._toast('Servicio armado · clic en el calendario para colocar');
+      }
     }
-    _desarmar() { this._armed = null; this._renderArmedHint(); this._renderCalendar(); this._updateSteps(); }
+
+    // v1.1.81 — Limpia TODO el armado (línea actual + cola + estado de la
+    // cadena en curso). Se llama al cancelar y al terminar de colocar.
+    _desarmar() {
+      this._armed = null;
+      this._armedQueue = [];
+      this._packReservaId = null;
+      this._packStaffId = null;
+      this._chainActivo = false;
+      this._chainMoving = false;
+      this._pendingMove = null;
+      this._moveQueue = [];
+      this._reservando = false;
+      this._renderArmedHint();
+      this._renderCalendar();
+      this._updateSteps();
+    }
+
     _renderArmedHint() {
       const el = this.shadowRoot.getElementById('armedHint');
       if (!el) return;
-      el.innerHTML = this._armed
-        ? `<span class="ks-legchip leg-pending" style="padding-left:9px">Colocando: ${esc(this._armed.servicio.label)}</span><button class="ks-tool" id="armedCancel" title="Cancelar">✕</button>`
-        : '';
-      const c = this.shadowRoot.getElementById('armedCancel'); if (c) c.addEventListener('click', () => this._desarmar());
+      if (!this._armed) { el.innerHTML = ''; return; }
+
+      const pendientes = this._armedQueue.length;
+      const total = 1 + pendientes;
+
+      if (total === 1) {
+        // Caso clásico de una sola línea: hint idéntico al de siempre.
+        el.innerHTML = `<span class="ks-legchip leg-pending" style="padding-left:9px">Colocando: ${esc(this._armed.servicio.label)}</span><button class="ks-tool" id="armedCancel" title="Cancelar">✕</button>`;
+      } else {
+        // v1.1.81 — varias líneas: número de orden, lista completa y
+        // selector de profesional. El chip resaltado es el que se coloca
+        // con el siguiente clic en el calendario.
+        const colocadas = this._packReservaId ? (total - pendientes - 1) : 0;
+        const items = [this._armed].concat(this._armedQueue)
+          .map((l, i) => `<span class="ks-armed-item ${i === 0 ? 'is-now' : ''}">${esc(l.servicio.label)}</span>`)
+          .join('');
+        el.innerHTML = `
+          <div class="ks-armed-wrap">
+            <span class="ks-armed-count">${colocadas + 1} / ${colocadas + total}</span>
+            <div class="ks-armed-list">${items}</div>
+            <div class="ks-armed-mode" title="¿Todos los servicios con el mismo profesional?">
+              <button class="ks-armed-modebtn ${this._armedStaffMode === 'same' ? 'active' : ''}" id="armedModeSame">Mismo profesional</button>
+              <button class="ks-armed-modebtn ${this._armedStaffMode === 'each' ? 'active' : ''}" id="armedModeEach">Elegir por servicio</button>
+            </div>
+            <button class="ks-tool" id="armedCancel" title="Cancelar armado">✕</button>
+          </div>`;
+      }
+
+      const c = this.shadowRoot.getElementById('armedCancel');
+      if (c) c.addEventListener('click', () => this._cancelarArmado());
+      const bSame = this.shadowRoot.getElementById('armedModeSame');
+      const bEach = this.shadowRoot.getElementById('armedModeEach');
+      // El modo se puede cambiar mientras no haya empezado la cadena: una
+      // vez creada la cita, cambiar de criterio a media colocación solo
+      // genera confusión.
+      if (bSame) bSame.addEventListener('click', () => {
+        if (this._packReservaId) { this._toast('La cita ya está empezada · termina de colocarla'); return; }
+        this._armedStaffMode = 'same'; this._renderArmedHint();
+      });
+      if (bEach) bEach.addEventListener('click', () => {
+        if (this._packReservaId) { this._toast('La cita ya está empezada · termina de colocarla'); return; }
+        this._armedStaffMode = 'each'; this._renderArmedHint();
+      });
+    }
+
+    // v1.1.81 — Cancelar desde la cabecera. Si la cita YA se creó y quedan
+    // líneas por colocar, el ✕ no borra nada del calendario: la cita creada
+    // se queda como está y solo se descarta lo que faltaba por añadir. Se
+    // avisa para que el operador no crea que ha cancelado la cita entera.
+    _cancelarArmado() {
+      const habiaCita = !!this._packReservaId;
+      const pendientes = this._armedQueue.length + (this._armed ? 1 : 0);
+      this._desarmar();
+      if (habiaCita && pendientes > 0) {
+        this._toast(`Cita creada · se descartan ${pendientes} servicio(s) sin colocar`);
+        this._sendToPage('getReservas', { fecha: this._fecha });
+      }
     }
 
     // ═══════════════════════════════════════════════════
@@ -3462,11 +5280,18 @@ button { font-family: inherit; cursor: pointer; }
         if (armable) {
           col.addEventListener('click', e => {
             if (e.target.closest('.ks-appt')) return;
+            // v1.1.64 — pre-check de cliente antes de abrir el selector (mismo
+            // criterio que _colocarReserva, para feedback inmediato).
+            if (!this._cliente || !this._cliente.nombre) { this._toast('Selecciona un cliente'); return; }
             const rect = col.getBoundingClientRect();
             const y = e.clientY - rect.top;
             const snap = this._settings.interval && [10, 15, 30].includes(this._settings.interval) ? this._settings.interval : 5;
             const mins = CAL_START * 60 + Math.round((y / ppm) / snap) * snap;
-            this._colocarReserva(staffId, minToHHMM(mins));
+            // v1.1.64 — confirmar hora antes de pintar. El pintado real ocurre
+            // al Confirmar dentro de _openHoraPicker → _colocarReserva.
+            const svcSub = (this._armed && this._armed.servicio) ? this._armed.servicio.label : '';
+            const cliSub = (this._cliente && this._cliente.nombre) ? this._cliente.nombre : '';
+            this._openHoraPicker({ mode: 'colocar', staffId, mins, title: 'Hora de inicio', subtitle: [svcSub, cliSub].filter(Boolean).join(' · ') });
           });
         } else {
           this._bindBlockDrag(col, staffId, ppm);
@@ -3475,6 +5300,8 @@ button { font-family: inherit; cursor: pointer; }
       wrap.querySelectorAll('.ks-appt').forEach(a => a.addEventListener('click', e => {
         // v1.1.14 — el resize handle no debe abrir el modal
         if (e.target.closest('.ks-appt-resize')) return;
+        // v1.1.64 — el icono de ajustar hora tampoco abre el modal
+        if (e.target.closest('.ks-appt-timeadj')) return;
         // v1.1.29 — si terminamos drag de fase, no abrir modal
         if (this._suppressApptClick) return;
         e.stopPropagation();
@@ -3485,6 +5312,28 @@ button { font-family: inherit; cursor: pointer; }
         if (b.getAttribute('data-fase-idx') === '-1') return;   // legacy sin fase
         this._bindFaseDrag(wrap, b, ppm);
       });
+      // v1.1.64 — icono 🕑: reajustar la hora de inicio de la fase con el
+      // mismo selector que el pintado. Mismo gate que el drag (solo
+      // draggable=1 → fases no pagadas con índice real). Envía el
+      // 'mover-fase' existente (MISMA fecha, MISMO staff de la columna).
+      wrap.querySelectorAll('.ks-appt-timeadj').forEach(icon => icon.addEventListener('click', e => {
+        e.stopPropagation();
+        const appt = icon.closest('.ks-appt'); if (!appt) return;
+        const reservaId = appt.getAttribute('data-id');
+        const faseIndex = parseInt(appt.getAttribute('data-fase-idx'), 10);
+        if (isNaN(faseIndex) || faseIndex < 0) return;
+        const startISO = appt.getAttribute('data-fase-start');
+        const faseDur = parseInt(appt.getAttribute('data-fase-dur'), 10) || 30;
+        const staffId = appt.closest('.ks-col')?.getAttribute('data-staff') || '';
+        const r = this._reservas.find(x => x._id === reservaId) || {};
+        let minsAct = CAL_START * 60;
+        if (startISO) {
+          const dd = new Date(startISO);
+          const hh = dd.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hour12: false });
+          minsAct = hhmmToMin(hh);
+        }
+        this._openHoraPicker({ mode: 'fase', reservaId, faseIndex, mins: minsAct, staffId, faseDur, title: 'Ajustar inicio de fase', subtitle: r.clientName || '' });
+      }));
       // v1.1.14 — drag del resize handle (extensión)
       wrap.querySelectorAll('.ks-appt-resize').forEach(h => this._bindResizeExt(wrap, h));
       // v1.1.14 — click ✕ en la extensión rayada → quitar extensión
@@ -3492,7 +5341,14 @@ button { font-family: inherit; cursor: pointer; }
         e.stopPropagation();
         const id = b.getAttribute('data-id');
         if (!id) return;
-        this._sendToPage('quitar-extension', { reservaId: id });
+        // v1.1.89 — si la extensión es de una fase, se quita poniendo su
+        // extMin a 0. Sin data-fase-idx es el camino legacy (campo raíz).
+        const fi = b.getAttribute('data-fase-idx');
+        if (fi != null && fi !== '' && Number(fi) >= 0) {
+          this._sendToPage('extender-fase', { reservaId: id, faseIndex: Number(fi), extMin: 0 });
+        } else {
+          this._sendToPage('quitar-extension', { reservaId: id });
+        }
       }));
       // v1.1.40 — Click ✕: enviar eliminarBloqueo al backend (no tocar
       // array local, ya no existe). El backend valida family='BLOQUEO'
@@ -3528,6 +5384,133 @@ button { font-family: inherit; cursor: pointer; }
       }));
     }
 
+    // ── v1.1.87 · CAPA TÁCTIL ─────────────────────────────────
+    // Traduce el gesto del dedo a eventos de ratón sintéticos. La lógica
+    // de arrastre (ghost, snap a 5 min, preview, commit al page code) no
+    // se toca: recibe exactamente los mismos eventos que recibiría de un
+    // ratón real.
+    //
+    //   · mousedown → sobre el elemento REAL tocado, para que los
+    //     guardias e.target.closest('.ks-appt-resize' / '.ks-appt-timeadj')
+    //     de los handlers existentes sigan funcionando igual.
+    //   · mousemove / mouseup → sobre `document` con bubbles:true. Alcanza
+    //     a los listeners de document (_bindFaseDrag) y a los de window
+    //     (_bindResizeExt, _bindBlockDrag), porque document propaga hacia
+    //     window.
+    _fireSyntheticMouse(target, type, x, y) {
+      if (!target) return;
+      try {
+        target.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true, composed: true, view: window,
+          button: 0, buttons: (type === 'mouseup' ? 0 : 1),
+          clientX: x, clientY: y
+        }));
+      } catch (_) { /* navegador sin constructor MouseEvent: se ignora */ }
+    }
+
+    // PULSACIÓN LARGA (450ms quieto) + arrastrar. Para elementos que
+    // además son superficie de scroll: bloques de cita y columnas libres.
+    // Mientras no está armado NO se llama a preventDefault → el scroll
+    // vertical del calendario y el click nativo (abrir cita) siguen
+    // funcionando exactamente igual.
+    // opts: { skipSelector, armedClass }
+    _bindTouchLongPressDrag(el, opts) {
+      const o = opts || {};
+      const HOLD_MS = 450;
+      const SLOP = 10;
+      let timer = null, armed = false, downTarget = null;
+      let x0 = 0, y0 = 0, lastX = 0, lastY = 0;
+
+      const limpiar = () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (armed && o.armedClass) el.classList.remove(o.armedClass);
+        armed = false; downTarget = null;
+      };
+
+      el.addEventListener('touchstart', e => {
+        if (!e.touches || e.touches.length !== 1) { limpiar(); return; }
+        const tgt = e.target;
+        // Mismos guardias que el camino de ratón.
+        if (o.skipSelector && tgt && tgt.closest && tgt.closest(o.skipSelector)) return;
+        const t = e.touches[0];
+        downTarget = tgt;
+        x0 = lastX = t.clientX; y0 = lastY = t.clientY;
+        armed = false;
+        timer = setTimeout(() => {
+          timer = null; armed = true;
+          if (o.armedClass) el.classList.add(o.armedClass);
+          try { if (navigator.vibrate) navigator.vibrate(15); } catch (_) {}
+          this._fireSyntheticMouse(downTarget, 'mousedown', lastX, lastY);
+        }, HOLD_MS);
+      }, { passive: false });
+
+      el.addEventListener('touchmove', e => {
+        const t = e.touches && e.touches[0]; if (!t) return;
+        lastX = t.clientX; lastY = t.clientY;
+        if (!armed) {
+          // Aún en la ventana de espera: si el dedo se mueve es un scroll,
+          // no un arrastre. Se cancela y se deja pasar el gesto al navegador.
+          if (Math.abs(lastX - x0) > SLOP || Math.abs(lastY - y0) > SLOP) limpiar();
+          return;
+        }
+        e.preventDefault();          // el gesto es nuestro: no hay scroll
+        this._fireSyntheticMouse(document, 'mousemove', lastX, lastY);
+      }, { passive: false });
+
+      el.addEventListener('touchend', e => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (!armed) { downTarget = null; return; }
+        const t = (e.changedTouches && e.changedTouches[0]) || null;
+        const fx = t ? t.clientX : lastX, fy = t ? t.clientY : lastY;
+        if (o.armedClass) el.classList.remove(o.armedClass);
+        armed = false; downTarget = null;
+        e.preventDefault();          // evita el click fantasma al soltar
+        this._fireSyntheticMouse(document, 'mouseup', fx, fy);
+      }, { passive: false });
+
+      el.addEventListener('touchcancel', () => {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (!armed) { downTarget = null; return; }
+        if (o.armedClass) el.classList.remove(o.armedClass);
+        armed = false; downTarget = null;
+        this._fireSyntheticMouse(document, 'mouseup', lastX, lastY);
+      }, { passive: false });
+    }
+
+    // ARRASTRE INMEDIATO. Para las dos asas de resize: objetivos
+    // deliberados y diminutos, nunca superficie de scroll. preventDefault
+    // en touchstart impide que la rejilla se desplace y suprime el click.
+    _bindTouchImmediateDrag(el) {
+      let lastX = 0, lastY = 0, activo = false;
+
+      el.addEventListener('touchstart', e => {
+        if (!e.touches || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        lastX = t.clientX; lastY = t.clientY; activo = true;
+        e.preventDefault(); e.stopPropagation();
+        this._fireSyntheticMouse(el, 'mousedown', lastX, lastY);
+      }, { passive: false });
+
+      el.addEventListener('touchmove', e => {
+        if (!activo) return;
+        const t = e.touches && e.touches[0]; if (!t) return;
+        lastX = t.clientX; lastY = t.clientY;
+        e.preventDefault(); e.stopPropagation();
+        this._fireSyntheticMouse(document, 'mousemove', lastX, lastY);
+      }, { passive: false });
+
+      const fin = e => {
+        if (!activo) return;
+        activo = false;
+        const t = (e.changedTouches && e.changedTouches[0]) || null;
+        const fx = t ? t.clientX : lastX, fy = t ? t.clientY : lastY;
+        e.preventDefault(); e.stopPropagation();
+        this._fireSyntheticMouse(document, 'mouseup', fx, fy);
+      };
+      el.addEventListener('touchend', fin, { passive: false });
+      el.addEventListener('touchcancel', fin, { passive: false });
+    }
+
     // v1.1.29 — DRAG&DROP DE FASE
     //   Mantén pulsado un bloque ocupante y arrástralo: aparece un ghost que
     //   sigue el cursor. Al soltar sobre otra celda → moverFase con la nueva
@@ -3546,6 +5529,8 @@ button { font-family: inherit; cursor: pointer; }
         if (e.button !== 0) return;
         // Si se toca el resize handle, dejarlo
         if (e.target.closest('.ks-appt-resize')) return;
+        // v1.1.64 — el icono de ajustar hora no inicia arrastre
+        if (e.target.closest('.ks-appt-timeadj')) return;
         downX = e.clientX; downY = e.clientY;
         dragging = false;
         const onMove = (ev) => {
@@ -3558,7 +5543,7 @@ button { font-family: inherit; cursor: pointer; }
             ghost.className = 'ks-fase-ghost';
             const cliente = (this._reservas.find(r => r._id === reservaId) || {}).clientName || '';
             const labelTxt = btn.querySelector('.ks-appt-svc, .ks-appt-client')?.textContent || 'Servicio';
-            ghost.innerHTML = `<div class="g-cli">${esc(cliente)}</div><div class="g-svc">${esc(labelTxt)} · ${faseDur}′</div>`;
+            ghost.innerHTML = `<div class="g-cli">${esc(cliente)}</div><div class="g-svc">${esc(labelTxt)} · ${faseDur}′</div><div class="g-time"></div>`;
             this.shadowRoot.appendChild(ghost);
           }
           if (dragging && ghost) {
@@ -3571,6 +5556,19 @@ button { font-family: inherit; cursor: pointer; }
               const r = c.getBoundingClientRect();
               if (ev.clientX >= r.left && ev.clientX <= r.right && ev.clientY >= r.top && ev.clientY <= r.bottom) {
                 c.classList.add('is-drop'); break;
+              }
+            }
+            // v1.1.64 — hora destino en vivo (snap 5 min, independiente del grid)
+            const gt = ghost.querySelector('.g-time');
+            const dropCol = this.shadowRoot.querySelector('.ks-col.is-drop');
+            if (gt) {
+              if (dropCol) {
+                const rr = dropCol.getBoundingClientRect();
+                let mm = CAL_START * 60 + Math.round(((ev.clientY - rr.top) / _ppm) / 5) * 5;
+                mm = Math.max(CAL_START * 60, Math.min((CAL_END * 60) - faseDur, mm));
+                gt.textContent = '🕑 ' + minToHHMM(mm);
+              } else {
+                gt.textContent = '';
               }
             }
           }
@@ -3596,8 +5594,9 @@ button { font-family: inherit; cursor: pointer; }
           const rect = target.getBoundingClientRect();
           const yIn = ev.clientY - rect.top;
           const minDesdeInicioGrid = yIn / _ppm;
-          // v1.1.30 — snap atado al settings.interval (10/15/30) con fallback 5
-          const SNAP = this._settings.interval && [10, 15, 30].includes(this._settings.interval) ? this._settings.interval : 5;
+          // v1.1.64 — snap del movimiento desacoplado del grid: siempre 5 min
+          // (el grid puede ser de 15, pero mover una cita va de 5 en 5).
+          const SNAP = 5;
           let minutosAbsolutos = CAL_START * 60 + Math.round(minDesdeInicioGrid / SNAP) * SNAP;
           if (minutosAbsolutos < CAL_START * 60) minutosAbsolutos = CAL_START * 60;
           if (minutosAbsolutos > (CAL_END * 60) - faseDur) minutosAbsolutos = (CAL_END * 60) - faseDur;
@@ -3623,6 +5622,14 @@ button { font-family: inherit; cursor: pointer; }
         document.addEventListener('mousemove', onMove);
         document.addEventListener('mouseup', onUp);
       });
+
+      // v1.1.87 — mismo arrastre con el dedo: pulsación larga de 450ms y
+      // luego mover. El toque corto sigue abriendo el modal de la cita y el
+      // arrastre directo sigue haciendo scroll del calendario.
+      this._bindTouchLongPressDrag(btn, {
+        skipSelector: '.ks-appt-resize, .ks-appt-timeadj, .ks-appt-ext-rm',
+        armedClass: 'is-touch-armed'
+      });
     }
 
     // v1.1.14 — drag del resize handle para crear/modificar extensión.
@@ -3630,10 +5637,101 @@ button { font-family: inherit; cursor: pointer; }
     _bindResizeExt(wrap, handle) {
       const _ppm = parseFloat(handle.dataset.ppm) || PX_PER_MIN;
       const reservaId = handle.dataset.id;
-      const endMinBase = parseInt(handle.dataset.endMin, 10);   // min absoluto donde acaba la última fase (sin extensión)
-      const extActual = Math.max(0, parseInt(handle.dataset.ext, 10) || 0);
       const appt = handle.closest('.ks-appt');
       if (!appt) return;
+      const faseIndex = parseInt(handle.dataset.faseIdx, 10);
+
+      // ── v1.1.89 — EXTENSIÓN RAYADA de la fase (cualquier fase ocupante,
+      //    faseIndex >= 0). Recupera el comportamiento anterior a v1.1.65:
+      //    arrastrar el asa NO alarga el bloque de color, añade un buffer
+      //    rayado detrás del servicio, con su ✕ para quitarlo. Ahora en
+      //    todos los servicios, no solo en el último de la cita.
+      //    El buffer vive en `extMin` DENTRO de la fase; backend
+      //    extenderFase (recepcionProLogic v1.0.45). Arrastrar hacia arriba
+      //    hasta 0 la elimina, igual que la ✕.
+      if (faseIndex >= 0) {
+        const durFase = parseInt(handle.dataset.faseDur, 10) || 30;
+        const startMin = parseInt(handle.dataset.startMin, 10) || 0;
+        const extBase = Math.max(0, parseInt(handle.dataset.faseExt, 10) || 0);
+        const finFaseMin = startMin + durFase;
+
+        // ── v1.1.91 — LA MISMA ASA ACORTA ──────────────────────────────
+        // `target` es un único escalar con el resultado del arrastre:
+        //    target > 0  → minutos de EXTENSIÓN rayada (extender-fase)
+        //    target = 0  → sin extensión
+        //    target < 0  → minutos que se RECORTAN de la fase
+        //                  (redimensionar-fase con nuevaDur = durFase+target)
+        // Tope inferior: si la fase YA tiene extensión, subir solo la
+        // consume hasta 0 y para ahí — quitar extensión y acortar NUNCA
+        // ocurren en el mismo arrastre (un gesto = una llamada al backend).
+        // Sin extensión, se puede recortar hasta un mínimo de 5 min de fase.
+        const DUR_MIN_FASE = 5;
+        const topeArriba = extBase > 0 ? 0 : -Math.max(0, durFase - DUR_MIN_FASE);
+        let preview = null, startY = 0, target = extBase, dragging = false;
+
+        const _pintarPreview = (t) => {
+          if (!preview) return;
+          if (t >= 0) {
+            preview.classList.remove('is-cut');
+            preview.style.top = (appt.offsetTop + appt.offsetHeight) + 'px';
+            preview.style.height = Math.max(t * _ppm, 1) + 'px';
+            preview.textContent = t > 0
+              ? `EXTENSIÓN · ${t} MIN · hasta ${minToHHMM(finFaseMin + t)}`
+              : (extBase > 0 ? 'SIN EXTENSIÓN' : '');
+          } else {
+            const recorte = -t;
+            const nuevaDur = Math.max(DUR_MIN_FASE, durFase - recorte);
+            preview.classList.add('is-cut');
+            preview.style.top = (appt.offsetTop + appt.offsetHeight - recorte * _ppm) + 'px';
+            preview.style.height = Math.max(recorte * _ppm, 1) + 'px';
+            preview.textContent = `ACORTAR · ${nuevaDur} MIN · hasta ${minToHHMM(startMin + nuevaDur)}`;
+          }
+        };
+
+        handle.addEventListener('mousedown', e => {
+          e.preventDefault(); e.stopPropagation();
+          dragging = true; startY = e.clientY; target = extBase;
+          // preview rayado, anclado al borde inferior del bloque
+          preview = document.createElement('div');
+          preview.className = 'ks-appt-resize-preview';
+          appt.parentElement.appendChild(preview);
+          _pintarPreview(target);
+          const onMove = ev => {
+            if (!dragging) return;
+            const dy = ev.clientY - startY;
+            let ne = extBase + Math.round((dy / _ppm) / 5) * 5;   // snap 5 min
+            if (ne < topeArriba) ne = topeArriba;
+            target = ne;
+            _pintarPreview(ne);
+          };
+          const onUp = () => {
+            dragging = false;
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+            if (preview) { preview.remove(); preview = null; }
+            if (target === extBase) return;
+            if (target >= 0) {
+              this._toast(target > 0 ? `Extendiendo +${target} min…` : 'Quitando extensión…');
+              this._sendToPage('extender-fase', { reservaId, faseIndex, extMin: target });
+            } else {
+              const nuevaDur = Math.max(DUR_MIN_FASE, durFase + target);
+              this._toast(`Acortando a ${nuevaDur} min…`);
+              this._sendToPage('redimensionar-fase', { reservaId, faseIndex, nuevaDur });
+            }
+          };
+          window.addEventListener('mousemove', onMove);
+          window.addEventListener('mouseup', onUp);
+        });
+        // v1.1.87 — misma asa con el dedo, arrastre inmediato. INTACTO.
+        this._bindTouchImmediateDrag(handle);
+        return;
+      }
+
+      // ── LEGACY (faseIndex = -1, reservas SIN fases): extensión con
+      //    extensionMin (buffer rayado tras el bloque). Comportamiento previo
+      //    intacto; envía 'extender-reserva'.
+      const endMinBase = parseInt(handle.dataset.endMin, 10);   // min absoluto donde acaba la última fase (sin extensión)
+      const extActual = Math.max(0, parseInt(handle.dataset.ext, 10) || 0);
       let preview = null, startY = 0, currentExt = extActual, dragging = false;
       handle.addEventListener('mousedown', e => {
         e.preventDefault(); e.stopPropagation();
@@ -3670,6 +5768,8 @@ button { font-family: inherit; cursor: pointer; }
         window.addEventListener('mousemove', onMove);
         window.addEventListener('mouseup', onUp);
       });
+      // v1.1.87 — misma asa con el dedo, arrastre inmediato.
+      this._bindTouchImmediateDrag(handle);
     }
 
     _madridNowMin() {
@@ -3836,28 +5936,111 @@ button { font-family: inherit; cursor: pointer; }
       const lastIdxGlobal = fasesOcupanTodas.length ? fasesOcupanTodas[fasesOcupanTodas.length - 1].idx : -1;
       const firstIdxGlobal = fasesOcupanTodas.length ? fasesOcupanTodas[0].idx : -1;
 
-      let lastFaseEndISO = null;
-      let html = fasesOcupanCol.map(f => {
+      // v1.1.67 — Fases de 1 min (marcadores tipo tamaño de pelo) NO se pintan
+      // como bloque propio (ilegible): su leyenda se pliega en la cartela de la
+      // fase principal y su minuto se suma al rango mostrado de esa fase. Es
+      // SOLO visual: la fase sigue intacta en datos/ledger/CRM.
+      const _durFase = (f) => {
+        let d = Number(f.dur) || 0;
+        if (!d && f.end && f.start) d = Math.max(1, (new Date(f.end).getTime() - new Date(f.start).getTime()) / 60000);
+        return d || 30;
+      };
+      const _esTiny = (f) => Math.round(_durFase(f)) <= 1;
+      const tinyCol = fasesOcupanCol.filter(_esTiny);
+      const normalCol = fasesOcupanCol.filter(f => !_esTiny(f));
+      // Solo se pliega si hay al menos una fase normal donde anclar; si todas
+      // son tiny (servicio suelto de 1 min), se pinta todo normal.
+      const plegar = normalCol.length > 0 && tinyCol.length > 0;
+      // v1.1.68 — FIX: anclar el plegado a la fase PRINCIPAL, NO a la primera
+      // fase de la cascada. La principal es SIEMPRE fase 'APLICACION' (complejo)
+      // o 'SERVICIO' (simple); los complementos son 'COMPLEMENTO'/'INCLUIDA'.
+      // Antes se anclaba a firstIdxGlobal: si la primera fase era corta (p.ej.
+      // "Lavado previo" de 15 min < altura mínima de la línea plegada) la
+      // leyenda no cabía y desaparecía (ni plegada ni como bloque). La
+      // principal suele ser la fase larga → visible. Fallbacks: por label del
+      // principal (1er item de serviciosDetail) y, en último caso, 1ª normal.
+      const _principalLabel = String((String(r.serviciosDetail || '').split(';;')[0] || '').split('|')[0] || '').trim();
+      const _anchorFase = plegar
+        ? (normalCol.find(f => f && (f.fase === 'APLICACION' || f.fase === 'SERVICIO'))
+           || normalCol.find(f => _principalLabel && String(f.label || '').trim() === _principalLabel)
+           || normalCol[0])
+        : null;
+      const anchorIdx = _anchorFase ? _anchorFase.idx : -999;
+      const foldLabels = plegar ? tinyCol.map(f => f.label || 'Servicio') : [];
+      let foldMaxEndMin = null;
+      if (plegar) {
+        for (const f of tinyCol) {
+          const endISO = f.end || new Date(new Date(f.start || r.fechaReserva).getTime() + _durFase(f) * 60000).toISOString();
+          const m = this._isoToMadridMin(endISO);
+          if (m != null && (foldMaxEndMin == null || m > foldMaxEndMin)) foldMaxEndMin = m;
+        }
+      }
+      const fasesAPintar = plegar ? normalCol : fasesOcupanCol;
+
+      // Fin de la última fase ocupante GLOBAL en esta columna (incl. tiny),
+      // para la extensión legacy (extensionMin). Independiente del plegado.
+      const _ultCol = fasesOcupanCol.find(f => f.idx === lastIdxGlobal);
+      let lastFaseEndISO = _ultCol
+        ? (_ultCol.end || new Date(new Date(_ultCol.start || r.fechaReserva).getTime() + _durFase(_ultCol) * 60000).toISOString())
+        : null;
+
+      let html = fasesAPintar.map(f => {
         const startISO = f.start || r.fechaReserva;
-        let dur = Number(f.dur) || 0;
-        if (!dur && f.end && f.start) dur = Math.max(1, (new Date(f.end).getTime() - new Date(f.start).getTime()) / 60000);
-        if (!dur) dur = 30;
-        const esUlt = f.idx === lastIdxGlobal;
-        if (esUlt) lastFaseEndISO = f.end || new Date(new Date(startISO).getTime() + dur * 60000).toISOString();
-        return this._apptBloqueHTML(r, staff, ppm, {
+        const dur = _durFase(f);
+        // Rango extendido con el minuto de las tiny SOLO en la fase ancla.
+        let rangoEndMin = null;
+        if (plegar && f.idx === anchorIdx && foldMaxEndMin != null) {
+          const propioEndMin = this._isoToMadridMin(startISO) + Math.round(dur);
+          rangoEndMin = Math.max(propioEndMin, foldMaxEndMin);
+        }
+        const laneInfo = staff.lanesMap?.[`${r._id}__${f.idx}`] || null;
+        const bloque = this._apptBloqueHTML(r, staff, ppm, {
           startISO,
           dur,
           label: f.label || 'Servicio',
           esFasePrincipal: (f.idx === firstIdxGlobal),
-          esUltimaFase: esUlt,
+          esUltimaFase: (f.idx === lastIdxGlobal),
           cascada: esCascada,
           faseIndex: f.idx,
-          laneInfo: staff.lanesMap?.[`${r._id}__${f.idx}`] || null   // v1.1.36
+          faseExtMin: Number(f.extMin) || 0,                           // v1.1.89
+          laneInfo,                                                    // v1.1.36
+          foldLabels: (f.idx === anchorIdx) ? foldLabels : null,       // v1.1.67
+          rangoEndMin                                                  // v1.1.67
         });
+        // v1.1.89 — extensión rayada DE ESTA FASE (campo extMin dentro de
+        // la fase). Va detrás de cualquier servicio, principal o lavado.
+        return bloque + this._extensionFaseHTML(r, staff, ppm, f, startISO, dur, laneInfo);
       }).join('');
       // Extensión: solo en la columna donde está la última fase
       if (lastFaseEndISO) html += this._extensionHTML(r, staff, ppm, lastFaseEndISO, 0);
       return html;
+    }
+    // v1.1.89 — Bloque rayado "EXTENSIÓN · N MIN" detrás de UNA fase
+    // concreta. Lee `extMin` de la propia fase, no del campo raíz, que es
+    // lo que permite tener extensión en cualquier servicio de la cascada.
+    // Respeta las lanes: se alinea con el bloque al que acompaña.
+    _extensionFaseHTML(r, staff, ppm, fase, startISO, dur, laneInfo) {
+      const min = Number(fase && fase.extMin) || 0;
+      if (min <= 0) return '';
+      if (fase && fase.ocupa === false) return '';   // PROCESO no se extiende
+      const _ppm = ppm || PX_PER_MIN;
+      const d = new Date(startISO);
+      const hhmm = d.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hour12: false });
+      const startMin = hhmmToMin(hhmm) + Math.round(Number(dur) || 0);
+      const top = (startMin - CAL_START * 60) * _ppm;
+      // Suelo de 18px: por debajo no cabe la ✕ y la extensión se volvía
+      // imposible de quitar (bug de v1.1.14, arrastrado hasta aquí).
+      const height = Math.max(min * _ppm, 18);
+      let lanePos = '';
+      if (laneInfo && laneInfo.total > 1) {
+        const w = 100 / laneInfo.total;
+        const left = laneInfo.lane * w;
+        lanePos = `left:calc(${left}% + 3px);width:calc(${w}% - 6px);right:auto;`;
+      }
+      return `<div class="ks-appt-ext" data-id="${esc(r._id)}" data-fase-idx="${fase.idx}" style="top:${top}px;height:${height}px;${lanePos}--staff:${staff.color}">
+        <span class="ks-appt-ext-lbl">EXTENSIÓN · ${min} MIN</span>
+        <button class="ks-appt-ext-rm" data-id="${esc(r._id)}" data-fase-idx="${fase.idx}" title="Quitar extensión">✕</button>
+      </div>`;
     }
     // v1.1.14 — Pinta el bloque rayado "EXTENSIÓN · N MIN" debajo de la
     // última fase ocupante. Sólo aparece si r.extensionMin > 0.
@@ -3869,7 +6052,9 @@ button { font-family: inherit; cursor: pointer; }
       const hhmm = d.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hour12: false });
       const startMin = hhmmToMin(hhmm);
       const top = (startMin - CAL_START * 60) * _ppm;
-      const height = Math.max(min * _ppm, 22);
+      // v1.1.89 — suelo 10px → 18px: con 10px la ✕ no cabía y no había
+      // manera de quitar la extensión.
+      const height = Math.max(min * _ppm, 18);
       return `<div class="ks-appt-ext" data-id="${esc(r._id)}" style="top:${top}px;height:${height}px;--staff:${staff.color}">
         <span class="ks-appt-ext-lbl">EXTENSIÓN · ${min} MIN</span>
         <button class="ks-appt-ext-rm" data-id="${esc(r._id)}" title="Quitar extensión">✕</button>
@@ -3882,7 +6067,9 @@ button { font-family: inherit; cursor: pointer; }
       const startMin = hhmmToMin(hhmm);
       const top = (startMin - CAL_START * 60) * _ppm;
       const dur = Number(opts.dur) || 30;
-      const height = Math.max(dur * _ppm, 26);
+      // v1.1.64 — suelo visual mínimo bajado a 10px para no condicionar
+      // servicios cortos (p.ej. 1 min). La duración real (dur) es exacta.
+      const height = Math.max(dur * _ppm, 10);
       const endHHMM = minToHHMM(startMin + Math.round(dur));
       // Resolver grupo del servicio principal para el color de familia
       let grupo = '';
@@ -3903,7 +6090,13 @@ button { font-family: inherit; cursor: pointer; }
       const lineaAbajo = titleMode === 'servicio'
         ? `<span class="ks-appt-svc">${esc(cliente)}</span>`
         : `<span class="ks-appt-svc">${esc(labelFase)}${opts.cascada && opts.esFasePrincipal ? '<span class="ks-cascade-flag">⛓ cascada</span>' : ''}</span>`;
-      const lineaHora = height >= 60 ? `<span class="ks-appt-rango">${hhmm} - ${endHHMM}</span>` : '';
+      // v1.1.67 — rango extendido con el minuto de las fases plegadas (tiny),
+      // y línea de leyenda plegada (marcadores de 1 min, p.ej. tamaño de pelo).
+      const rangoEndTxt = (opts.rangoEndMin != null) ? minToHHMM(opts.rangoEndMin) : endHHMM;
+      const foldLine = (opts.foldLabels && opts.foldLabels.length)
+        ? `<span class="ks-appt-fold">${opts.foldLabels.map(esc).join(' · ')}</span>`
+        : '';
+      const lineaHora = height >= 60 ? `<span class="ks-appt-rango">${hhmm} - ${rangoEndTxt}</span>` : '';
       // v1.1.29 — atributos para drag&drop por fase. Cita PAGADA no es draggable.
       const draggable = (!paid && opts.faseIndex >= 0) ? 1 : 0;
       // v1.1.36 — Side-by-side overlap rendering.
@@ -3919,14 +6112,21 @@ button { font-family: inherit; cursor: pointer; }
         // 3px de gap visual entre lanes.
         lanePos = `left:calc(${left}% + 3px);width:calc(${w}% - 6px);right:auto;`;
       }
-      return `<button class="ks-appt ${paid ? 'is-paid' : 'is-pending'}${esMedida ? ' is-medida' : ''}" data-id="${esc(r._id)}" data-fase-idx="${opts.faseIndex}" data-fase-dur="${dur}" data-fase-start="${esc(opts.startISO)}" data-draggable="${draggable}" style="top:${top}px;height:${height}px;${lanePos}--staff:${staff.color};--fam:${fam}">
+      // v1.1.100 — Mensaje que el cliente dejó al reservar online. Se
+      // descarta 'RECURSO INTERNO', que es una marca técnica del motor de
+      // disponibilidad y no un mensaje de nadie.
+      const notaCliente = String(r.notes || '').trim();
+      const tieneNota = !!notaCliente && !notaCliente.includes('RECURSO INTERNO');
+      return `<button class="ks-appt ${paid ? 'is-paid' : 'is-pending'}${esMedida ? ' is-medida' : ''}${tieneNota ? ' has-nota' : ''}" data-id="${esc(r._id)}" data-fase-idx="${opts.faseIndex}" data-fase-dur="${dur}" data-fase-start="${esc(opts.startISO)}" data-draggable="${draggable}" title="${esc(labelFase)} · ${hhmm}–${endHHMM}${cliente ? ' · ' + esc(cliente) : ''}${tieneNota ? ' · ✉ Mensaje del cliente (ver Ficha técnica)' : ''}" style="top:${top}px;height:${height}px;${lanePos}--staff:${staff.color};--fam:${fam}">
         <span class="ks-appt-statusdot">${paid ? '✓' : '€'}</span>
+        ${draggable ? `<span class="ks-appt-timeadj" title="Ajustar hora de inicio">🕑</span>` : ''}
         <span class="ks-appt-inner">
           <span class="ks-appt-topline">${lineaArriba}</span>
           ${height >= 44 ? lineaAbajo : ''}
+          ${height >= 44 ? foldLine : ''}
           ${lineaHora}
         </span>
-        ${opts.esUltimaFase ? `<span class="ks-appt-resize" data-id="${esc(r._id)}" data-ppm="${_ppm}" data-end-iso="${esc(opts.startISO)}" data-end-min="${startMin + Math.round(dur)}" data-ext="${Number(r.extensionMin) || 0}" title="Arrastra para extender"></span>` : ''}
+        ${(!paid && (opts.faseIndex >= 0 || opts.esUltimaFase)) ? `<span class="ks-appt-resize" data-id="${esc(r._id)}" data-ppm="${_ppm}" data-fase-idx="${opts.faseIndex}" data-fase-dur="${Math.round(dur)}" data-fase-ext="${Number(opts.faseExtMin) || 0}" data-start-min="${startMin}" data-end-iso="${esc(opts.startISO)}" data-end-min="${startMin + Math.round(dur)}" data-ext="${Number(r.extensionMin) || 0}" title="${opts.faseIndex >= 0 ? 'Arrastra para ajustar la duración de este servicio' : 'Arrastra para extender'}"></span>` : ''}
       </button>`;
     }
     // v1.1.40 — _blockHTML ahora recibe una RESERVA con family='BLOQUEO'
@@ -3965,6 +6165,7 @@ button { font-family: inherit; cursor: pointer; }
       const yToMin = clientY => { const r = col.getBoundingClientRect(); return Math.max(CAL_START * 60, CAL_START * 60 + Math.round(((clientY - r.top) / _ppm) / 5) * 5); };
       col.addEventListener('mousedown', e => {
         if (e.target.closest('.ks-appt') || e.target.closest('.ks-customblock')) return;
+        if (!this._puede('bloqueo')) { this._toast('No tienes permiso para esta acción'); return; }
         dragging = true; startY = yToMin(e.clientY);
         preview = document.createElement('div'); preview.className = 'ks-blockpreview'; col.appendChild(preview);
         const move = ev => {
@@ -4000,10 +6201,19 @@ button { font-family: inherit; cursor: pointer; }
         };
         window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
       });
+
+      // v1.1.87 — crear bloqueo con el dedo: pulsación larga de 450ms
+      // sobre la columna libre y luego arrastrar verticalmente. Hasta que
+      // no se arma, el dedo sigue haciendo scroll del calendario.
+      this._bindTouchLongPressDrag(col, {
+        skipSelector: '.ks-appt, .ks-customblock',
+        armedClass: 'is-touch-armed'
+      });
     }
 
     _colocarReserva(staffId, horaHHmm) {
       if (this._reservando || !this._armed) return;
+      if (!this._puede('crearReserva')) { this._toast('No tienes permiso para esta acción'); return; }
       if (!this._cliente || !this._cliente.nombre) { this._toast('Selecciona un cliente'); return; }
       const staffObj = this._staff.find(s => s.wixResourceId === staffId) || {};
       const a = this._armed;
@@ -4011,6 +6221,16 @@ button { font-family: inherit; cursor: pointer; }
       const parts = (cli.nombre || '').split(' ');
       const firstName = parts.shift() || ''; const lastName = parts.join(' ');
       const esProvisional = !!cli.esProvisional;
+
+      // v1.1.81 — Si la cita YA está creada, esta línea del armado no crea
+      // una cita nueva: se añade a la que está en curso (modo "elegir por
+      // servicio", donde el operador clica una columna por cada servicio).
+      // El aviso de teléfono/email no se repite: ya se dio al crearla.
+      if (this._packReservaId) {
+        this._reservando = true;
+        this._enviarAgregarServicio(this._armed, { staffId, horaHHmm });
+        return;
+      }
 
       // v1.1.33 — Warning falta teléfono y/o email.
       // No bloquea pero pide confirmación explícita: ese cliente no
@@ -4050,21 +6270,12 @@ button { font-family: inherit; cursor: pointer; }
       // v1.1.43 — incluir la variante elegida del principal (si el servicio
       // tiene variantes). El backend (crearPackReserva v1.0.25) usa su
       // precio/duración en vez del base. Sin variante → null (precio base).
-      let varianteSel = null;
-      {
-        const sv = a.servicio || {};
-        const vars = Array.isArray(sv.variantes) ? sv.variantes : [];
-        const vi = Number(a.variantIdx) || 0;
-        if (sv.hasVariants && vars.length && vars[vi]) {
-          const v = vars[vi];
-          varianteSel = {
-            idx: vi,
-            label: (v && (v.label || v.nombre)) ? String(v.label || v.nombre) : '',
-            price: Number(v && v.precio != null ? v.precio : (v && v.price)) || 0,
-            duration: Number(v && v.duracion != null ? v.duracion : (v && v.duration)) || 0
-          };
-        }
-      }
+      // v1.1.81 — extracción a _varianteSelDeLinea (misma lógica, ahora
+      // compartida con las líneas que se añaden vía agregar-servicio).
+      const varianteSel = this._varianteSelDeLinea(a);
+      // v1.1.81 — columna donde queda la línea 1: es la de la cita, y la
+      // que heredan las fases añadidas si el modo es "mismo profesional".
+      this._packStaffId = staffId;
       this._sendToPage('crearReserva', { payload: {
         fecha: this._fecha, horaHHmm,
         principalSetupUid: a.servicio.setupUid,
@@ -4079,10 +6290,202 @@ button { font-family: inherit; cursor: pointer; }
     }
 
     // ═══════════════════════════════════════════════════
+    // v1.1.81 — CADENA DEL ARMADO MÚLTIPLE
+    //
+    // Línea 1  → crearReserva  (crearPackReserva: crea la cita, dispara la
+    //            única notificación al cliente).
+    // Líneas 2+ → agregar-servicio (agregarServicioReserva: encadena detrás
+    //            de la última fase que ocupa, dentro de la MISMA fila).
+    // Resultado: una cita, un total, un cobro, un WhatsApp.
+    //
+    // En modo 'each' cada línea se coloca donde el operador clique; tras
+    // añadirla se reubican sus fases con `mover-fase` (contrato existente).
+    // ═══════════════════════════════════════════════════
+
+    // Variante elegida de una línea armada, o null si el servicio no tiene
+    // variantes. Misma forma que consume el backend desde v1.0.25.
+    _varianteSelDeLinea(linea) {
+      const sv = (linea && linea.servicio) || {};
+      const vars = Array.isArray(sv.variantes) ? sv.variantes : [];
+      const vi = Number(linea && linea.variantIdx) || 0;
+      if (!sv.hasVariants || !vars.length || !vars[vi]) return null;
+      const v = vars[vi];
+      return {
+        idx: vi,
+        label: (v && (v.label || v.nombre)) ? String(v.label || v.nombre) : '',
+        price: Number(v && v.precio != null ? v.precio : (v && v.price)) || 0,
+        duration: Number(v && v.duracion != null ? v.duracion : (v && v.duration)) || 0
+      };
+    }
+
+    // Envía una línea a la cita en curso. `dest` solo llega en modo 'each'
+    // (columna y hora que ha elegido el operador para ESE servicio).
+    _enviarAgregarServicio(linea, dest) {
+      if (!linea || !this._packReservaId) return;
+      this._pendingMove = (this._armedStaffMode === 'each' && dest) ? { ...dest } : null;
+      this._toast(`Añadiendo ${linea.servicio.label}…`);
+      this._sendToPage('agregar-servicio', {
+        reservaId: this._packReservaId,
+        setupUid: linea.servicio.setupUid,
+        varianteSel: this._varianteSelDeLinea(linea),
+        complementosSetupUid: linea.complementosSetupUid || []
+      });
+    }
+
+    // Prepara la cola de reubicación de las fases recién añadidas,
+    // conservando los desfases internos de la cascada respecto a la hora
+    // elegida. Backend agregarServicioReserva v1.0.43 devuelve `fasesNuevas`
+    // con su índice real dentro del array de fases de la reserva.
+    _prepararMovimientos(fasesNuevas, dest) {
+      const ocup = (Array.isArray(fasesNuevas) ? fasesNuevas : []).filter(f => f && f.ocupa && f.start);
+      if (!ocup.length || !dest) return;
+      const baseMs = Math.min.apply(null, ocup.map(f => new Date(f.start).getTime()));
+      if (!isFinite(baseMs)) return;
+      const [yyyy, mm, dd] = String(this._fecha).split('-').map(Number);
+      const [hh, mi] = String(dest.horaHHmm || '00:00').split(':').map(Number);
+      // Mismo patrón de construcción de ISO que el drag de fase y el
+      // selector de hora (navegador del salón en Madrid).
+      const destinoMs = new Date(yyyy, mm - 1, dd, hh || 0, mi || 0, 0, 0).getTime();
+      this._moveQueue = ocup.map(f => ({
+        faseIndex: f.index,
+        nuevoStartISO: new Date(destinoMs + (new Date(f.start).getTime() - baseMs)).toISOString(),
+        staffId: dest.staffId
+      }));
+      this._chainMoving = this._moveQueue.length > 0;
+    }
+
+    // Los movimientos van de UNO EN UNO. moverFase hace read-merge-update de
+    // la fila completa: dos en paralelo se pisarían y se perdería una fase.
+    _enviarSiguienteMovimiento() {
+      const mv = this._moveQueue.shift();
+      if (!mv) { this._chainMoving = false; this._avanzarCadena(); return; }
+      this._sendToPage('mover-fase', {
+        reservaId: this._packReservaId,
+        faseIndex: mv.faseIndex,
+        nuevoStartISO: mv.nuevoStartISO,
+        nuevoStaffId: mv.staffId
+      });
+    }
+
+    // Pasa a la siguiente línea pendiente, o cierra la cadena.
+    _avanzarCadena() {
+      this._chainMoving = false;
+      if (this._armedQueue.length) {
+        this._armed = this._armedQueue.shift();
+        this._renderArmedHint();
+        if (this._armedStaffMode === 'same') {
+          this._reservando = true;
+          this._enviarAgregarServicio(this._armed, null);
+        } else {
+          this._reservando = false;
+          this._toast(`Elige columna y hora para ${this._armed.servicio.label}`);
+          this._sendToPage('getReservas', { fecha: this._fecha });
+        }
+        return;
+      }
+      this._toast('Cita completa ✓');
+      this._desarmar();
+      this._sendToPage('getReservas', { fecha: this._fecha });
+    }
+
+    // ═══════════════════════════════════════════════════
+    // v1.1.64 — SELECTOR DE HORA (confirmar antes de pintar / reajustar fase)
+    //   Popup mínimo: display grande HH:MM + input time (paso 1 min) + ±5/±15
+    //   + Confirmar. Dos modos:
+    //     · 'colocar' → al confirmar llama _colocarReserva(staffId, hhmm)
+    //       (crea la cita/cascada del servicio armado desde esa hora).
+    //     · 'fase'    → al confirmar envía 'mover-fase' (contrato existente,
+    //       backend moverFase) con la nueva hora, MISMA fecha y MISMO staff.
+    //   Cero backend nuevo, cero colecciones, cero IDs.
+    // ═══════════════════════════════════════════════════
+    _openHoraPicker(opts) {
+      const o = opts || {};
+      const root = this.shadowRoot;
+      root.getElementById('horaPickScrim')?.remove();
+
+      const durGuard = (o.mode === 'fase') ? (Number(o.faseDur) || 0) : 0;
+      const minMin = CAL_START * 60;
+      const maxMin = (CAL_END * 60) - Math.max(1, durGuard);
+      const clamp = (m) => Math.max(minMin, Math.min(maxMin, Math.round(m)));
+      let mins = Number(o.mins);
+      if (!isFinite(mins)) mins = minMin;
+      mins = clamp(mins);
+
+      const scrim = document.createElement('div');
+      scrim.className = 'ks-modal-scrim'; scrim.id = 'horaPickScrim';
+      scrim.addEventListener('click', (e) => { if (e.target === scrim) scrim.remove(); });
+
+      const box = document.createElement('div');
+      box.className = 'ks-horapick';
+      const eyebrow = o.mode === 'fase' ? 'Reajustar fase' : 'Confirmar hora';
+      const title = o.title || (o.mode === 'fase' ? 'Ajustar inicio' : 'Hora de inicio');
+      const sub = o.subtitle ? `<div class="ks-horapick-sub">${esc(o.subtitle)}</div>` : '';
+      box.innerHTML = `
+        <div class="ks-horapick-head">
+          <div><span class="ks-horapick-eyebrow">${eyebrow}</span><h3 class="ks-horapick-title">${esc(title)}</h3>${sub}</div>
+          <button class="ks-modal-x" id="hpX">✕</button>
+        </div>
+        <div class="ks-horapick-display" id="hpDisplay">${minToHHMM(mins)}</div>
+        <div class="ks-horapick-steppers">
+          <button class="ks-horapick-step" data-d="-15">−15</button>
+          <button class="ks-horapick-step" data-d="-5">−5</button>
+          <input type="time" id="hpTime" class="ks-horapick-input" step="60" value="${minToHHMM(mins)}">
+          <button class="ks-horapick-step" data-d="5">+5</button>
+          <button class="ks-horapick-step" data-d="15">+15</button>
+        </div>
+        <div class="ks-horapick-foot">
+          <button class="ks-detail-cancel" id="hpCancel">Cancelar</button>
+          <button class="ks-detail-add" id="hpOk">Confirmar</button>
+        </div>`;
+      scrim.appendChild(box); root.appendChild(scrim);
+
+      const input = box.querySelector('#hpTime');
+      const display = box.querySelector('#hpDisplay');
+      const setMins = (m) => { mins = clamp(m); input.value = minToHHMM(mins); display.textContent = minToHHMM(mins); };
+      input.addEventListener('input', () => { if (input.value) { mins = clamp(hhmmToMin(input.value)); display.textContent = minToHHMM(mins); } });
+      input.addEventListener('change', () => setMins(input.value ? hhmmToMin(input.value) : mins));
+      box.querySelectorAll('.ks-horapick-step').forEach(b => b.addEventListener('click', () => {
+        setMins(mins + (parseInt(b.getAttribute('data-d'), 10) || 0));
+      }));
+      box.querySelector('#hpX').addEventListener('click', () => scrim.remove());
+      box.querySelector('#hpCancel').addEventListener('click', () => scrim.remove());
+      box.querySelector('#hpOk').addEventListener('click', () => {
+        const finalMin = clamp(mins);
+        const hhmm = minToHHMM(finalMin);
+        scrim.remove();
+        if (o.mode === 'fase') {
+          // Reajuste de hora de inicio de fase: MISMA fecha, MISMO staff.
+          // Construye el ISO igual que el drag (navegador en Madrid).
+          const [yyyy, mm, dd] = String(this._fecha).split('-').map(Number);
+          const hh = Math.floor(finalMin / 60), mi = finalMin % 60;
+          const nuevaISO = new Date(yyyy, mm - 1, dd, hh, mi, 0, 0).toISOString();
+          this._toast(`Ajustando a ${hhmm}…`);
+          this._sendToPage('mover-fase', {
+            reservaId: o.reservaId,
+            faseIndex: o.faseIndex,
+            nuevoStartISO: nuevaISO,
+            nuevoStaffId: o.staffId
+          });
+        } else {
+          // Colocar el servicio armado desde esta hora (las validaciones de
+          // cliente/permiso/armado viven en _colocarReserva).
+          this._colocarReserva(o.staffId, hhmm);
+        }
+      });
+      setTimeout(() => { try { input.focus(); } catch (_) {} }, 30);
+    }
+
+    // ═══════════════════════════════════════════════════
     // MODAL DE CITA + COBRO
     // ═══════════════════════════════════════════════════
     _openModal(r) {
       this._modalReserva = r;
+      // v1.1.77 — cliente para precargar la FICHA TÉCNICA. Se guarda al
+      // ABRIR la cita: el modal tapa la barra, así que el flujo real es
+      // abrir cita → cerrar → pulsar Ficha Técnica.
+      if (r && r.clientName && r.family !== 'BLOQUEO') {
+        this._fcUltimoCliente = { nombre: r.clientName, telefono: r.clientPhone || '', contactId: r.contactId || '' };
+      }
       this._disc = 0;
       this._discMode = 'pct';
       this._canjeActivo = null;
@@ -4124,13 +6527,70 @@ button { font-family: inherit; cursor: pointer; }
       const hhmm = d ? d.toLocaleTimeString('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
       const endH = d ? minToHHMM(hhmmToMin(hhmm) + (Number(r.duracionTotal) || 0)) : '';
       const items = (r.serviciosDetail || '').split(';;').filter(Boolean).map(x => { const [l, p] = x.split('|'); return { label: l || '', price: Number(p) || 0 }; });
-      const itemsHTML = (items.length ? items : [{ label: r.title || 'Servicio', price: Number(r.precioTotal) || 0 }]).map((it, i) => `<div class="ks-modal-item ${i > 0 ? 'is-compl' : ''}" data-i="${i}"><span class="ks-item-label">${i > 0 ? '<span class="ks-item-complflag">⛓</span>' : ''}${esc(it.label)}</span><span class="ks-item-right"><span class="ks-item-price">${it.price}€</span>${items.length > 1 ? `<button class="ks-item-rm" data-i="${i}" title="Quitar este servicio" aria-label="Quitar">✕</button>` : ''}</span></div>`).join('');
-      // v1.1.24 — Productos vendidos asociados a esta cita
-      const productosVendidos = Array.isArray(r.productosVendidos) ? r.productosVendidos : [];
-      const productosHTML = productosVendidos.map(p => {
-        const qty = p.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${p.cantidad}</span>` : '';
-        return `<div class="ks-modal-item is-prod"><span class="ks-item-label"><span class="ks-item-prodflag">🛒</span>${esc(p.nombre)}${qty} <span class="ks-prod-badge">VENDIDO</span></span><span class="ks-item-right"><span class="ks-item-price">${p.subtotal}€</span></span></div>`;
-      }).join('');
+      // v1.1.64 — minutos ocupados por servicio (de las fases ocupantes de la
+      // reserva), para mostrar el tiempo de cada línea en la card de la cita.
+      const _fasesModal = Array.isArray(r.fases) ? r.fases : (r.fases?.items || []);
+      const _labelDur = {};
+      for (const f of _fasesModal) {
+        if (!f || !f.ocupa) continue;
+        const _l = String(f.label || '').trim(); if (!_l) continue;
+        let _d = Number(f.dur) || 0;
+        if (!_d && f.end && f.start) _d = Math.max(1, (new Date(f.end).getTime() - new Date(f.start).getTime()) / 60000);
+        _labelDur[_l] = (_labelDur[_l] || 0) + _d;
+      }
+      const _durLinea = (label) => {
+        let _d = _labelDur[String(label || '').trim()] || 0;
+        if (!_d && items.length <= 1) _d = Number(r.duracionTotal) || 0;
+        return _d > 0 ? `<span class="ks-item-dur">${Math.round(_d)}′</span>` : '';
+      };
+      // v1.1.90 — TARIFA POR PESO. Una línea lleva campo de gramos solo si
+      // su servicio tiene `cobroporPeso` + `precioGramo` en el catálogo. Se
+      // identifica el servicio de cada línea cruzando su label con la fase
+      // ocupante tipo:'servicio' del mismo label, alineada por número de
+      // ocurrencia (mismo criterio que quitarItemReserva en el backend).
+      const _pesosGuardados = {};
+      for (const w of (Array.isArray(r.lineWeights) ? r.lineWeights : [])) {
+        if (w && Number.isFinite(Number(w.index))) _pesosGuardados[Number(w.index)] = Number(w.grams) || 0;
+      }
+      const _fasesSvc = _fasesModal.filter(f => f && f.tipo === 'servicio');
+      const _occVistas = {};
+      const _pesoInfo = items.map((it, i) => {
+        const lab = String(it.label || '').trim();
+        if (!lab) return null;
+        const occ = _occVistas[lab] || 0;
+        _occVistas[lab] = occ + 1;
+        let seen = 0, uid = '';
+        for (const f of _fasesSvc) {
+          if (String(f.label || '').trim() !== lab) continue;
+          if (seen === occ) { uid = String(f.setupUid || ''); break; }
+          seen++;
+        }
+        const svc = uid ? (this._porSetupUid || {})[uid] : null;
+        if (!svc || svc.cobroporPeso !== true) return null;
+        const eurG = Number(svc.precioGramo) || 0;
+        if (eurG <= 0) return null;
+        return { precioGramo: eurG, grams: Number(_pesosGuardados[i]) || 0 };
+      });
+      const _pesoHTML = (i) => {
+        const info = _pesoInfo[i];
+        if (!info) return '';
+        if (paid) {
+          return `<div class="ks-weight-row"><span class="ks-weight-rate">${info.grams ? info.grams + ' g × ' : ''}${info.precioGramo} €/g</span></div>`;
+        }
+        return `<div class="ks-weight-row">`
+          + `<input type="number" class="ks-weight-input" id="wIn${i}" data-wi="${i}" min="0" step="1" placeholder="gramos" value="${info.grams || ''}">`
+          + `<span class="ks-weight-rate">g × ${info.precioGramo} €/g</span>`
+          + `<button class="ks-weight-ok" data-wi="${i}">Aplicar</button>`
+          + `</div>`;
+      };
+
+      const itemsHTML = (items.length ? items : [{ label: r.title || 'Servicio', price: Number(r.precioTotal) || 0 }]).map((it, i) => `<div class="ks-modal-item ${i > 0 ? 'is-compl' : ''}" data-i="${i}"><span class="ks-item-label">${i > 0 ? '<span class="ks-item-complflag">⛓</span>' : ''}${esc(it.label)}</span><span class="ks-item-right">${_durLinea(it.label)}<span class="ks-item-price">${it.price}€</span>${items.length > 1 ? `<button class="ks-item-rm" data-i="${i}" title="Quitar este servicio" aria-label="Quitar">✕</button>` : ''}</span></div>${_pesoHTML(i)}`).join('');
+      // v1.1.92 — Los productos vendidos YA NO se pintan en la ficha de la
+      // cita. El cruce que los traía era heurístico (mismo contactId + mismo
+      // día, pegado a la cita más cercana en el tiempo), así que una venta
+      // hecha desde TIENDA después de cobrar acababa colgada de una cita ya
+      // cerrada. Las ventas se ven en el informe del día, con cliente,
+      // concepto, importe y vendedor.
       // v1.1.26 — cálculo unificado del descuento (% o €)
       // v1.1.39 — soporta promo del servicio encadenada con manual operador.
       const { subtotal, discPct, discEur, subtotalOriginal, ahorroPromo, tienePromo } = this._calcDescuento();
@@ -4217,7 +6677,7 @@ button { font-family: inherit; cursor: pointer; }
         <div class="ks-modal-meta">${hhmm}${endH ? '–' + endH : ''}</div>
         ${contactRow}
         ${modalWarn}
-        <div class="ks-modal-items">${itemsHTML}${productosHTML}</div>
+        <div class="ks-modal-items">${itemsHTML}</div>
         ${paid ? '' : `<div class="ks-modal-disc" id="discBox"></div>`}
         ${paid ? '' : `<div class="ks-modal-canje" id="canjeBox" style="margin-top:6px"></div>`}
         <div class="ks-modal-total"><span>TOTAL</span><span class="ks-total-wrap">${mostrarTachado ? `<span class="ks-total-strike">${subtotalOriginal}€</span> <span class="ks-total-discnote" style="font-size:11px;color:#d48a1a;font-weight:600">${noteText}</span>` : ''}<span class="ks-total-val">${total}€</span></span></div>
@@ -4243,6 +6703,9 @@ button { font-family: inherit; cursor: pointer; }
           <button class="ks-add add-extra" id="addExtra">✎ Extra</button>
         </div>`}
         ${paid ? `<div id="metodoCobroLine" class="ks-modal-metodo" style="margin-top:8px;font-size:12.5px;color:var(--ks-ink2);font-weight:600;display:flex;align-items:center;gap:6px;"></div>` : ''}
+        ${r.family === 'BLOQUEO' ? '' : `<div class="ks-modal-ficha">
+          <button class="ks-fichacli" id="mFichaCli"${r.contactId ? '' : ' disabled title="Esta cita no tiene cliente identificado"'}>🎨 FICHA TÉCNICA</button>
+        </div>`}
         <div class="ks-modal-foot">${paid ? `<div id="facturaSlot" style="flex:1;display:flex;gap:7px;align-items:center;min-height:36px;"></div>` : `<button class="ks-changedate" id="mChangeDate">🗓 Cambiar fecha</button>`}<button class="ks-modal-close" id="mClose">Cerrar</button></div>`;
       scrim.appendChild(modal); root.appendChild(scrim);
 
@@ -4256,7 +6719,10 @@ button { font-family: inherit; cursor: pointer; }
         this._sendToPage('quitar-item', { reservaId: r._id, itemIndex: i });
       }));
       modal.querySelector('#mClose').addEventListener('click', () => this._closeModal());
-      if (!paid) {
+      // v1.1.97 — FICHA DEL CLIENTE. Disponible también con la cita pagada:
+      // la fórmula se anota al terminar el servicio, no antes de cobrar.
+      modal.querySelector('#mFichaCli')?.addEventListener('click', () => this._openFichaTecnica(r));
+      if (!paid && this._puede('editarCita')) {
         this._renderDiscBox();
         this._renderCanjeBox();  // v1.1.50 — F4/F5 bloque bono/tarjeta
         modal.querySelectorAll('.ks-pay[data-m]').forEach(b => b.addEventListener('click', () => {
@@ -4271,11 +6737,47 @@ button { font-family: inherit; cursor: pointer; }
         modal.querySelector('#mCancelRes')?.addEventListener('click', () => {
           if (confirm('¿Cancelar esta cita? Se borrarán sus huecos del calendario.')) this._sendToPage('cancelarReserva', { reservaId: r._id });
         });
+        // v1.1.90 — Aplicar gramos de una línea con tarifa por peso.
+        // Se envían GRAMOS, nunca euros: el importe lo calcula el backend
+        // con el precioGramo del catálogo.
+        const _enviarPeso = (i) => {
+          const inp = modal.querySelector('#wIn' + i);
+          if (!inp) return;
+          const g = Number(inp.value);
+          if (!Number.isFinite(g) || g < 0) { this._toast('Gramos inválidos'); return; }
+          modal.querySelectorAll('.ks-weight-ok').forEach(b => b.disabled = true);
+          this._sendToPage('set-line-weight', { reservaId: r._id, itemIndex: i, grams: g });
+        };
+        modal.querySelectorAll('.ks-weight-ok').forEach(btn => btn.addEventListener('click', () => {
+          const i = parseInt(btn.getAttribute('data-wi'), 10);
+          if (!isNaN(i)) _enviarPeso(i);
+        }));
+        modal.querySelectorAll('.ks-weight-input').forEach(inp => inp.addEventListener('keydown', ev => {
+          if (ev.key !== 'Enter') return;
+          ev.preventDefault();
+          const i = parseInt(inp.getAttribute('data-wi'), 10);
+          if (!isNaN(i)) _enviarPeso(i);
+        }));
         modal.querySelector('#addSvc')?.addEventListener('click', () => this._openAddServicioModal(r));
         modal.querySelector('#addCompl')?.addEventListener('click', () => this._openAddComplementoModal(r));
         modal.querySelector('#addProd')?.addEventListener('click', () => this._openAddProductoModal(r));
         modal.querySelector('#addExtra')?.addEventListener('click', () => this._openAddExtraModal(r));
         modal.querySelector('#mChangeDate')?.addEventListener('click', () => this._openReprogramarModal(r));
+      } else if (!paid) {
+        // v1.1.62 — Nivel 4 (Básico): cita NO pagada abierta en modo lectura.
+        // Los botones se pintan igual (no se toca el markup) pero cablean al
+        // aviso de permiso en lugar de las acciones reales. Regla: todo lo
+        // bloqueado responde "No tienes permiso para esta acción".
+        const _sinPermiso = () => this._toast('No tienes permiso para esta acción');
+        modal.querySelectorAll('.ks-pay[data-m]').forEach(b => b.addEventListener('click', _sinPermiso));
+        modal.querySelector('#mCancelRes')?.addEventListener('click', _sinPermiso);
+        modal.querySelectorAll('.ks-weight-ok').forEach(b => b.addEventListener('click', _sinPermiso));
+        modal.querySelectorAll('.ks-weight-input').forEach(i => { i.disabled = true; });
+        modal.querySelector('#addSvc')?.addEventListener('click', _sinPermiso);
+        modal.querySelector('#addCompl')?.addEventListener('click', _sinPermiso);
+        modal.querySelector('#addProd')?.addEventListener('click', _sinPermiso);
+        modal.querySelector('#addExtra')?.addEventListener('click', _sinPermiso);
+        modal.querySelector('#mChangeDate')?.addEventListener('click', _sinPermiso);
       } else {
         // v1.1.11 — cita ya cobrada: pedir el pago para mostrar chip si lleva descuento
         this._pagoChipReservaId = r._id;
@@ -4787,6 +7289,10 @@ button { font-family: inherit; cursor: pointer; }
       });
     }
     // v1.1.16 — COMPLEMENTO (servicio del catálogo con tipo complemento/ambos)
+    // ⛓ AÑADIR COMPLEMENTO (desde el modal de la cita)
+    // v1.1.83 — con ELECCIÓN DE VARIANTE. Antes solo viajaba el setupUid:
+    //   un complemento con variantes (Peinado M/L/XL) se añadía siempre a
+    //   precio y duración BASE. Requiere backend v1.0.44 y page code v1.0.37.
     _openAddComplementoModal(r) {
       const catalogo = Array.isArray(this._servicios) ? this._servicios : [];
       // Filtrar: tipo complemento o ambos, activo, con setupUid
@@ -4795,9 +7301,14 @@ button { font-family: inherit; cursor: pointer; }
         .sort((a, b) => String(a.label || '').localeCompare(String(b.label || '')));
       let opts = '<option value="">— Elegir complemento —</option>';
       candidatos.forEach(s => {
-        opts += `<option value="${esc(s.setupUid)}">${esc(s.label)} · ${Number(s.duration) || 0}min · ${Number(s.price) || 0}€</option>`;
+        const varTag = s.hasVariants ? ' · variantes' : '';
+        opts += `<option value="${esc(s.setupUid)}">${esc(s.label)} · ${Number(s.duration) || 0}min · ${Number(s.price) || 0}€${varTag}</option>`;
       });
       const vacio = candidatos.length === 0;
+
+      this._addCmpUid = '';
+      this._addCmpVarIdx = 0;
+
       const box = this._openSubModal(`
         <div class="ks-modal-head"><span class="ks-modal-staff">⛓ AÑADIR COMPLEMENTO</span><button class="ks-modal-x" id="cmX">✕</button></div>
         <div style="margin-top:14px;font-size:13px;color:var(--ks-ink2);">Se añadirá al final del pack y sumará tiempo + precio.</div>
@@ -4806,23 +7317,75 @@ button { font-family: inherit; cursor: pointer; }
           <select id="cmSel" style="width:100%;margin-top:6px;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;">${opts}</select>
           ${vacio ? '<div style="margin-top:10px;color:#a55b00;font-size:12px;font-style:italic;">No hay servicios marcados como Complemento/Ambos en el catálogo.</div>' : ''}
         </div>
+        <div id="cmOpts" style="margin-top:6px;"></div>
         <div class="ks-modal-foot" style="margin-top:18px;">
           <button class="ks-modal-close" id="cmCancel">Cancelar</button>
           <button class="ks-pay" id="cmOk" style="background:var(--ks-ink);color:#fff;" ${vacio ? 'disabled' : ''}>Añadir</button>
         </div>`);
       box.querySelector('#cmX').addEventListener('click', () => this._closeSubModal());
       box.querySelector('#cmCancel').addEventListener('click', () => this._closeSubModal());
+
+      const sel = box.querySelector('#cmSel');
+      sel.addEventListener('change', () => {
+        this._addCmpUid = sel.value || '';
+        this._addCmpVarIdx = 0;
+        this._renderAddComplementoOpts(box);
+      });
+
       box.querySelector('#cmOk').addEventListener('click', () => {
-        const setupUid = box.querySelector('#cmSel').value;
+        const setupUid = this._addCmpUid || sel.value;
         if (!setupUid) { this._toast('Elige un complemento'); return; }
+        const svc = this._porSetupUid[setupUid];
+        const varianteSel = svc
+          ? this._varianteSelDeLinea({ servicio: svc, variantIdx: this._addCmpVarIdx })
+          : null;
         box.querySelector('#cmOk').disabled = true;
-        this._sendToPage('agregar-complemento', { reservaId: r._id, setupUid });
+        this._sendToPage('agregar-complemento', { reservaId: r._id, setupUid, varianteSel });
       });
     }
+
+    // v1.1.83 — Variantes del complemento elegido. Solo variantes: los
+    // complementos no arrastran cascada propia en este circuito.
+    _renderAddComplementoOpts(box) {
+      const cont = box.querySelector('#cmOpts');
+      if (!cont) return;
+      const svc = this._addCmpUid ? this._porSetupUid[this._addCmpUid] : null;
+      const vars = (svc && Array.isArray(svc.variantes)) ? svc.variantes : [];
+      if (!svc || !svc.hasVariants || !vars.length) { cont.innerHTML = ''; return; }
+
+      cont.innerHTML = `<div style="margin-top:12px"><label style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--ks-ink2);">VARIANTE</label>
+        <div class="ks-variant-list" style="margin-top:6px">${vars.map((v, i) => {
+          const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || '');
+          const vPrice = (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) : NaN;
+          const vDur = (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) : NaN;
+          const meta = [];
+          if (!isNaN(vPrice)) meta.push(vPrice > 0 ? `${vPrice}€` : 'incluido');
+          if (!isNaN(vDur) && vDur > 0) meta.push(`${vDur}′`);
+          const metaHTML = meta.length ? `<span class="ks-dur">${meta.join(' · ')}</span>` : '';
+          return `<button class="ks-variant ${i === this._addCmpVarIdx ? 'active' : ''}" data-cmvi="${i}" style="display:flex;justify-content:space-between;align-items:center"><span>${esc(vLabel)}</span>${metaHTML}</button>`;
+        }).join('')}</div></div>`;
+
+      cont.querySelectorAll('[data-cmvi]').forEach(b => b.addEventListener('click', () => {
+        this._addCmpVarIdx = parseInt(b.getAttribute('data-cmvi'), 10) || 0;
+        this._renderAddComplementoOpts(box);
+      }));
+    }
+
     // v1.1.30 — SERVICIO ADICIONAL: añade un servicio principal NUEVO al
     // final de la cita existente. La cascada del nuevo servicio (si es
     // complejo) se construye en el backend reutilizando construirFasesPack.
     // Regla pedida por Jal: se encadena después de la última fase ocupante.
+    // ═══════════════════════════════════════════════════
+    // + SERVICIO ADICIONAL (desde el modal de la cita)
+    // v1.1.81 — Ahora con ELECCIÓN DE VARIANTE. Antes solo se mandaba el
+    //   setupUid: un servicio con variantes (Corte Mujer M/L/XL) se añadía
+    //   siempre a precio y duración BASE, y un servicio con fases
+    //   obligatorias con variantes (CASO B: Botox → Planchado M/L/XL)
+    //   fallaba con "Falta elegir variante de: …" y no había manera de
+    //   añadirlo. Requiere backend v1.0.43 y page code v1.0.36.
+    //   Los complementos OPCIONALES no se ofrecen aquí: para eso está el
+    //   botón "⛓ Complemento" del propio modal de la cita.
+    // ═══════════════════════════════════════════════════
     _openAddServicioModal(r) {
       const catalogo = Array.isArray(this._servicios) ? this._servicios : [];
       // Filtrar: tipo principal o ambos, activo, con setupUid
@@ -4834,9 +7397,16 @@ button { font-family: inherit; cursor: pointer; }
         const dur = Number(s.duration) || 0;
         const px = Number(s.price) || 0;
         const claseTag = s.claseServicio === 'complejo_fases' || s.claseServicio === 'complejo_proceso' ? ' · cascada' : '';
-        opts += `<option value="${esc(s.setupUid)}" data-precio="${px}">${esc(s.label)} · ${dur}min · ${px}€${claseTag}</option>`;
+        const varTag = s.hasVariants ? ' · variantes' : '';
+        opts += `<option value="${esc(s.setupUid)}" data-precio="${px}">${esc(s.label)} · ${dur}min · ${px}€${claseTag}${varTag}</option>`;
       });
       const vacio = candidatos.length === 0;
+
+      // Estado de la selección (se reinicia cada vez que se abre)
+      this._addSvcUid = '';
+      this._addSvcVarIdx = 0;
+      this._addSvcComplSel = {};
+
       const box = this._openSubModal(`
         <div class="ks-modal-head"><span class="ks-modal-staff">+ AÑADIR SERVICIO</span><button class="ks-modal-x" id="svX">✕</button></div>
         <div style="margin-top:14px;font-size:13px;color:var(--ks-ink2);">Se añadirá al final de la cita actual y sumará tiempo + precio.</div>
@@ -4845,37 +7415,346 @@ button { font-family: inherit; cursor: pointer; }
           <select id="svSel" style="width:100%;margin-top:6px;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;">${opts}</select>
           ${vacio ? '<div style="margin-top:10px;color:#a55b00;font-size:12px;font-style:italic;">No hay servicios principales en el catálogo.</div>' : ''}
         </div>
+        <div id="svOpts" style="margin-top:6px;"></div>
         <div class="ks-modal-foot" style="margin-top:18px;">
           <button class="ks-modal-close" id="svCancel">Cancelar</button>
           <button class="ks-pay" id="svOk" style="background:var(--ks-ink);color:#fff;" ${vacio ? 'disabled' : ''}>Añadir</button>
         </div>`);
       box.querySelector('#svX').addEventListener('click', () => this._closeSubModal());
       box.querySelector('#svCancel').addEventListener('click', () => this._closeSubModal());
+
+      const sel = box.querySelector('#svSel');
+      sel.addEventListener('change', () => {
+        this._addSvcUid = sel.value || '';
+        this._addSvcVarIdx = 0;
+        this._addSvcComplSel = {};
+        this._renderAddServicioOpts(box);
+      });
+
       box.querySelector('#svOk').addEventListener('click', () => {
-        const sel = box.querySelector('#svSel');
-        const setupUid = sel.value;
+        const setupUid = this._addSvcUid || sel.value;
         if (!setupUid) { this._toast('Elige un servicio'); return; }
+        const svc = this._porSetupUid[setupUid];
+        if (!svc) { this._toast('Servicio no encontrado en el catálogo'); return; }
+
+        // Variante del propio servicio
+        const varianteSel = this._varianteSelDeLinea({ servicio: svc, variantIdx: this._addSvcVarIdx });
+
+        // Fases obligatorias con variantes (CASO B): sin elección el motor
+        // no puede construir las fases y el backend rechaza la operación.
+        // Se valida aquí para dar el aviso antes de la ida y vuelta.
+        const comps = Array.isArray(svc.complementos) ? svc.complementos : [];
+        const complementosSetupUid = [];
+        for (const c of comps) {
+          if (!c || !c.required) continue;
+          const cvars = Array.isArray(c.variantes) ? c.variantes : [];
+          if (c.hasVariants && cvars.length) {
+            const elegida = this._addSvcComplSel[c.setupUid];
+            if (!elegida || typeof elegida !== 'object') {
+              this._toast(`Elige una opción de "${c.label}" (obligatorio)`);
+              return;
+            }
+            const v = cvars[elegida.varianteIdx];
+            if (!v) { this._toast(`Opción no válida en "${c.label}"`); return; }
+            complementosSetupUid.push({
+              uid: c.setupUid,
+              varianteId: (typeof v === 'object' && v.tamano_estilo) ? v.tamano_estilo : String(elegida.varianteIdx),
+              varianteLabel: (typeof v === 'object') ? (v.label || v.nombre || '') : String(v),
+              price: (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) || 0 : 0,
+              duration: (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) || 0 : 0
+            });
+          } else {
+            // Obligatorio sin variantes que aun así llega al widget: se
+            // manda tal cual para que el motor lo materialice.
+            complementosSetupUid.push(c.setupUid);
+          }
+        }
+
         box.querySelector('#svOk').disabled = true;
-        this._sendToPage('agregar-servicio', { reservaId: r._id, setupUid });
+        this._sendToPage('agregar-servicio', {
+          reservaId: r._id,
+          setupUid,
+          varianteSel,
+          complementosSetupUid
+        });
       });
     }
+
+    // v1.1.81 — Bloque de opciones del servicio elegido en "+ Servicio
+    // adicional": variantes del propio servicio y fases obligatorias con
+    // variantes. Se repinta entero en cada cambio (bloque pequeño y aislado).
+    _renderAddServicioOpts(box) {
+      const cont = box.querySelector('#svOpts');
+      if (!cont) return;
+      const svc = this._addSvcUid ? this._porSetupUid[this._addSvcUid] : null;
+      if (!svc) { cont.innerHTML = ''; return; }
+
+      const chip = (label, price, dur, active, attrs) => {
+        const meta = [];
+        if (!isNaN(price)) meta.push(price > 0 ? `${price}€` : 'incluido');
+        if (!isNaN(dur) && dur > 0) meta.push(`${dur}′`);
+        const metaHTML = meta.length ? `<span class="ks-dur">${meta.join(' · ')}</span>` : '';
+        return `<button class="ks-variant ${active ? 'active' : ''}" ${attrs} style="display:flex;justify-content:space-between;align-items:center"><span>${esc(label)}</span>${metaHTML}</button>`;
+      };
+
+      let html = '';
+
+      const vars = Array.isArray(svc.variantes) ? svc.variantes : [];
+      if (svc.hasVariants && vars.length) {
+        html += `<div style="margin-top:12px"><label style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--ks-ink2);">VARIANTE</label>
+          <div class="ks-variant-list" style="margin-top:6px">${vars.map((v, i) => {
+            const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || '');
+            const vPrice = (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) : NaN;
+            const vDur = (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) : NaN;
+            return chip(vLabel, vPrice, vDur, i === this._addSvcVarIdx, `data-svvi="${i}"`);
+          }).join('')}</div></div>`;
+      }
+
+      const comps = (Array.isArray(svc.complementos) ? svc.complementos : [])
+        .filter(c => c && c.required && c.hasVariants && Array.isArray(c.variantes) && c.variantes.length);
+      for (const c of comps) {
+        const sel = this._addSvcComplSel[c.setupUid];
+        const selIdx = (sel && typeof sel === 'object') ? sel.varianteIdx : -1;
+        html += `<div style="margin-top:12px"><label style="font-size:11px;font-weight:700;letter-spacing:.5px;color:var(--ks-ink2);">⛓ ${esc(c.label)} · OBLIGATORIO</label>
+          <div class="ks-variant-list" style="margin-top:6px">${c.variantes.map((v, vi) => {
+            const vLabel = (typeof v === 'string') ? v : (v.label || v.nombre || '');
+            const vPrice = (typeof v === 'object') ? Number(v.precio != null ? v.precio : v.price) : NaN;
+            const vDur = (typeof v === 'object') ? Number(v.duracion != null ? v.duracion : v.duration) : NaN;
+            return chip(vLabel, vPrice, vDur, vi === selIdx, `data-svcuid="${esc(c.setupUid)}" data-svcvi="${vi}"`);
+          }).join('')}</div></div>`;
+      }
+
+      cont.innerHTML = html;
+
+      cont.querySelectorAll('[data-svvi]').forEach(b => b.addEventListener('click', () => {
+        this._addSvcVarIdx = parseInt(b.getAttribute('data-svvi'), 10) || 0;
+        this._renderAddServicioOpts(box);
+      }));
+      cont.querySelectorAll('[data-svcuid]').forEach(b => b.addEventListener('click', () => {
+        const uid = b.getAttribute('data-svcuid');
+        const vi = parseInt(b.getAttribute('data-svcvi'), 10) || 0;
+        this._addSvcComplSel[uid] = { varianteIdx: vi };
+        this._renderAddServicioOpts(box);
+      }));
+    }
+
     // v1.1.17 — PRODUCTO (modal completo estilo V1: buscador + lista
     // + carrito + métodos de pago + REGISTRAR VENTA). Venta independiente
     // vinculada al packId (reservaId), no se mete en precioTotal.
-    _openAddProductoModal(r) {
-      // Cliente provisional: no se pueden vender productos sin contactId
+    // ═══════════════════════════════════════════════════
+    // v1.1.84 — TIENDA · venta de productos SIN CITA
+    //
+    // Reutiliza íntegro el modal de venta desde cita (buscador, carrito,
+    // variantes, métodos de pago, MISSING_VARIANT). La única diferencia es
+    // que no viaja `packId`: la venta queda registrada contra el contacto,
+    // sin cita asociada.
+    //
+    // Cliente: se toma el que esté cargado en el aside. Si no hay ninguno,
+    // o el que hay es provisional, se pide nombre + teléfono o email y se
+    // crea el contacto al vuelo (mismo circuito que "+ Cliente nuevo").
+    // No hay venta anónima: venderProductosDesdeAgenda exige contactId
+    // porque genera un pedido real de tienda.
+    // ═══════════════════════════════════════════════════
+    // v1.1.85 — Tras registrar una venta de TIENDA, el modal no se cierra:
+    // muestra el resultado y ofrece TICKET (factura simplificada) o FACTURA
+    // completa con CIF/DNI, con la misma mecánica que el modal de cita.
+    // El documento se ancla al cobro por `sourceKey` (bookingId de la venta),
+    // no a una reserva — backend facturacionSalonLogic v1.0.4.
+    _renderVentaDocPanel() {
+      const body = this.shadowRoot.querySelector('#pdBody');
+      if (!body) return;
+      const cli = this._cliente || {};
+      const total = Number(this._ventaTiendaTotal) || 0;
+
+      let slot = '';
+      if (this._ventaGenerando) {
+        slot = `<div style="display:flex;align-items:center;gap:7px;color:var(--ks-ink2);font-size:12.5px;font-weight:600">
+          <span style="display:inline-block;width:12px;height:12px;border:2px solid var(--ks-line);border-top-color:var(--ks-accent);border-radius:50%;animation:ksSpin .7s linear infinite;"></span>
+          Generando documento…</div>`;
+      } else if (this._ventaDoc && this._ventaDoc.invoiceNumber) {
+        const d = this._ventaDoc;
+        const esTicket = d.modo === 'ticket';
+        slot = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="display:inline-flex;align-items:center;gap:7px;background:${esTicket ? 'var(--ks-paper2)' : 'var(--ks-accent-soft)'};border:1px solid ${esTicket ? 'var(--ks-line)' : 'var(--ks-accent)'};border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:700;color:${esTicket ? 'var(--ks-ink)' : 'var(--ks-accent-ink)'}">
+              <span>${esTicket ? '🧾' : '📄'}</span><span>${esc(d.invoiceNumber)}</span>
+              <a href="#" id="vtPdf" title="Abrir PDF" style="text-decoration:none;color:inherit;font-size:14px;margin-left:2px">🔗</a>
+            </span>
+            ${esTicket ? '<button id="vtUpgrade" style="background:#15803d;color:#fff;border:0;border-radius:8px;padding:7px 11px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:inherit">📄 Convertir a factura</button>' : ''}
+          </div>`;
+      } else if (this._ventaForm) {
+        slot = `<div style="display:flex;flex-direction:column;gap:7px">
+            <div style="font-size:10.5px;font-weight:700;color:var(--ks-ink3);letter-spacing:.5px;text-transform:uppercase">Datos para factura completa</div>
+            <input id="vtVat" placeholder="CIF / DNI *" value="${esc(this._tiendaVatId || '')}" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--ks-line);border-radius:8px;font-size:13px;font-family:inherit">
+            <input id="vtLegal" placeholder="Razón social o nombre fiscal" value="${esc(this._tiendaLegalName || '')}" style="width:100%;box-sizing:border-box;padding:9px;border:1px solid var(--ks-line);border-radius:8px;font-size:13px;font-family:inherit">
+            <div style="display:flex;gap:7px">
+              <button id="vtEmitir" style="flex:1;background:var(--ks-ink);color:#fff;border:0;border-radius:8px;padding:9px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">Emitir factura</button>
+              <button id="vtFormCancel" style="background:var(--ks-paper2);color:var(--ks-ink2);border:1px solid var(--ks-line);border-radius:8px;padding:9px 12px;font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit">Cancelar</button>
+            </div>
+            <div style="font-size:11px;color:var(--ks-ink3)">El CIF/DNI se guarda en la ficha del cliente para las próximas veces.</div>
+          </div>`;
+      } else {
+        const conCif = !!(this._tiendaVatId || '').trim();
+        slot = `<div style="display:flex;gap:8px">
+            <button id="vtTicket" style="flex:1;background:var(--ks-paper2);color:var(--ks-ink);border:1px solid var(--ks-line);border-radius:8px;padding:10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">🧾 Ticket</button>
+            <button id="vtFactura" style="flex:1;background:var(--ks-ink);color:#fff;border:0;border-radius:8px;padding:10px;font-size:12.5px;font-weight:700;cursor:pointer;font-family:inherit">📄 Factura</button>
+          </div>${conCif ? `<div style="margin-top:7px;font-size:11px;color:var(--ks-ink3)">CIF/DNI recogido: <strong>${esc(this._tiendaVatId)}</strong></div>` : ''}`;
+      }
+
+      body.innerHTML = `
+        <div style="text-align:center;padding:6px 0 12px">
+          <div style="font-size:26px">✓</div>
+          <div style="font-size:14px;font-weight:700;color:var(--ks-ink);margin-top:4px">Venta registrada</div>
+          <div style="font-size:12.5px;color:var(--ks-ink2);margin-top:2px">${esc(cli.nombre || '')} · ${total}€</div>
+        </div>
+        <div style="border-top:1px solid var(--ks-line2);padding-top:12px">
+          <div style="font-size:10.5px;font-weight:700;color:var(--ks-ink3);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">Documento</div>
+          ${slot}
+        </div>
+        <div class="ks-modal-foot" style="margin-top:16px">
+          <button class="ks-modal-close" id="vtCerrar">Cerrar</button>
+        </div>`;
+
+      body.querySelector('#vtCerrar')?.addEventListener('click', () => {
+        this._closeProductoModal();
+        this._sendToPage('getReservas', { fecha: this._fecha });
+      });
+      body.querySelector('#vtTicket')?.addEventListener('click', () => {
+        if (!this._ventaTiendaKey) { this._toast('No se puede identificar la venta'); return; }
+        this._ventaGenerando = true; this._renderVentaDocPanel();
+        this._sendToPage('generarTicketVenta', { sourceKey: this._ventaTiendaKey });
+      });
+      body.querySelector('#vtFactura')?.addEventListener('click', () => {
+        this._ventaForm = true; this._renderVentaDocPanel();
+      });
+      body.querySelector('#vtUpgrade')?.addEventListener('click', () => {
+        this._ventaForm = true; this._ventaDoc = null; this._renderVentaDocPanel();
+      });
+      body.querySelector('#vtFormCancel')?.addEventListener('click', () => {
+        this._ventaForm = false; this._renderVentaDocPanel();
+      });
+      body.querySelector('#vtEmitir')?.addEventListener('click', () => {
+        const vatId = body.querySelector('#vtVat').value.trim();
+        const legalName = body.querySelector('#vtLegal').value.trim();
+        if (!vatId) { this._toast('El CIF/DNI es obligatorio para la factura completa'); return; }
+        if (!this._ventaTiendaKey) { this._toast('No se puede identificar la venta'); return; }
+        this._ventaForm = false;
+        this._ventaGenerando = true;
+        this._renderVentaDocPanel();
+        this._sendToPage('generarFacturaVenta', { sourceKey: this._ventaTiendaKey, vatId, legalName });
+      });
+      body.querySelector('#vtPdf')?.addEventListener('click', e => {
+        e.preventDefault();
+        const url = this._ventaDoc && this._ventaDoc.pdfUrl;
+        if (url) window.open(url, '_blank', 'noopener');
+        else this._toast('El documento no tiene PDF asociado');
+      });
+    }
+
+    _openTiendaModal() {
+      if (!this._puede('cobrar')) { this._toast('No tienes permiso para esta acción'); return; }
+      // v1.1.86 — El paso de cliente se muestra SIEMPRE, también cuando ya
+      // hay uno cargado en el aside: es donde se captura el CIF/DNI, que
+      // hay que pedir con el cliente delante y no después de cobrar. Si el
+      // cliente ya existe, el formulario viene relleno y basta con
+      // continuar.
+      this._tiendaVatId = '';
+      this._tiendaLegalName = '';
+      this._openTiendaClienteForm();
+    }
+
+    // Mini-formulario de identificación. Se prerrellena con lo que haya
+    // en el aside (caso típico: cliente provisional con solo el nombre).
+    _openTiendaClienteForm() {
+      const cli = this._cliente || {};
+      const yaIdentificado = !!(cli.contactId && !cli.esProvisional);
+      const partes = String(cli.nombre || '').trim().split(' ');
+      const nomPrev = partes.shift() || '';
+      const apePrev = partes.join(' ');
+      const box = this._openSubModal(`
+        <div class="ks-modal-head"><span class="ks-modal-staff">🛍 TIENDA · CLIENTE</span><button class="ks-modal-x" id="tdX">✕</button></div>
+        <div style="margin-top:14px;font-size:13px;color:var(--ks-ink2);">${yaIdentificado
+          ? 'Cliente cargado. Añade el CIF/DNI si va a querer factura completa.'
+          : 'La venta se registra a nombre de un cliente. Indica sus datos para darlo de alta.'}</div>
+        <div style="margin-top:14px;display:grid;gap:8px">
+          <input id="tdNombre" placeholder="Nombre *" value="${esc(nomPrev)}" ${yaIdentificado ? 'disabled' : ''} style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;${yaIdentificado ? 'background:var(--ks-paper2);color:var(--ks-ink2);' : ''}">
+          <input id="tdApellido" placeholder="Apellidos" value="${esc(apePrev)}" ${yaIdentificado ? 'disabled' : ''} style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;${yaIdentificado ? 'background:var(--ks-paper2);color:var(--ks-ink2);' : ''}">
+          <input id="tdTelefono" placeholder="Teléfono" value="${esc(cli.telefono || '')}" ${yaIdentificado ? 'disabled' : ''} style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;${yaIdentificado ? 'background:var(--ks-paper2);color:var(--ks-ink2);' : ''}">
+          <input id="tdEmail" placeholder="Email" value="${esc(cli.email || '')}" ${yaIdentificado ? 'disabled' : ''} style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;${yaIdentificado ? 'background:var(--ks-paper2);color:var(--ks-ink2);' : ''}">
+        </div>
+        <div style="margin-top:14px;border-top:1px solid var(--ks-line2);padding-top:12px;">
+          <div style="font-size:10.5px;font-weight:700;color:var(--ks-ink3);letter-spacing:.5px;text-transform:uppercase;margin-bottom:7px">Datos fiscales · solo si quiere factura</div>
+          <div style="display:grid;gap:8px">
+            <input id="tdVatId" placeholder="CIF / DNI" value="${esc(this._tiendaVatId || '')}" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;">
+            <input id="tdLegal" placeholder="Razón social o nombre fiscal" value="${esc(this._tiendaLegalName || '')}" style="width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--ks-line);border-radius:8px;font-size:14px;font-family:inherit;">
+          </div>
+          <div style="margin-top:7px;font-size:11px;color:var(--ks-ink3);">Si lo dejas vacío podrás emitir ticket, y añadir el CIF más tarde para convertirlo en factura.</div>
+        </div>
+        <div style="margin-top:10px;font-size:11.5px;color:var(--ks-ink3);">${yaIdentificado ? '' : 'Nombre y, al menos, teléfono o email.'}</div>
+        <div class="ks-modal-foot" style="margin-top:16px;">
+          <button class="ks-modal-close" id="tdCancel">Cancelar</button>
+          <button class="ks-pay" id="tdOk" style="background:var(--ks-ink);color:#fff;">Continuar</button>
+        </div>`);
+      box.querySelector('#tdX').addEventListener('click', () => this._closeSubModal());
+      box.querySelector('#tdCancel').addEventListener('click', () => this._closeSubModal());
+      box.querySelector('#tdOk').addEventListener('click', () => {
+        // Los datos fiscales se guardan siempre: viajan al paso de factura
+        // y se persisten en la ficha del cliente al emitirla.
+        this._tiendaVatId = box.querySelector('#tdVatId').value.trim();
+        this._tiendaLegalName = box.querySelector('#tdLegal').value.trim();
+
+        if (yaIdentificado) { this._abrirVentaTienda(); return; }
+
+        const nombre = box.querySelector('#tdNombre').value.trim();
+        const apellido = box.querySelector('#tdApellido').value.trim();
+        const telefono = box.querySelector('#tdTelefono').value.trim();
+        const email = box.querySelector('#tdEmail').value.trim();
+        if (!nombre) { this._toast('El nombre es obligatorio'); return; }
+        if (!telefono && !email) { this._toast('Indica teléfono o email'); return; }
+        box.querySelector('#tdOk').disabled = true;
+        // Bandera: al llegar 'clienteCreado' se abre la venta directamente.
+        this._tiendaEsperandoCliente = true;
+        this._sendToPage('crearCliente', { nombre, apellido, telefono, email });
+      });
+    }
+
+    // Abre el modal de venta con el cliente cargado y SIN cita asociada.
+    _abrirVentaTienda() {
+      const cli = this._cliente;
+      if (!cli || !cli.contactId) { this._toast('Falta identificar al cliente'); return; }
+      this._closeSubModal();
+      this._ventaTiendaActiva = true;
+      this._ventaTiendaKey = '';
+      this._ventaTiendaTotal = 0;
+      this._ventaDoc = null;
+      this._ventaForm = false;
+      this._ventaGenerando = false;
+      this._openAddProductoModal({
+        _id: '',                       // sin cita → el page code manda packId vacío
+        contactId: cli.contactId,
+        clientName: cli.nombre || '',
+        clientEmail: cli.email || '',
+        clientPhone: cli.telefono || ''
+      }, { titulo: `🛍 TIENDA · ${esc(cli.nombre || '')}` });
+    }
+
+    // v1.1.84 — `opts.titulo` permite reutilizar este mismo modal desde el
+    // botón TIENDA (venta sin cita). Sin opts, comportamiento de siempre.
+    _openAddProductoModal(r, opts) {
+      // Sin contactId no hay venta: venderProductosDesdeAgenda crea un
+      // pedido real de tienda contra un contacto y aborta sin él.
       const esProvisional = !r.contactId;
       if (esProvisional) {
         this._toast('Cliente provisional · convierte el cliente primero para vender productos');
         return;
       }
+      const tituloModal = (opts && opts.titulo) ? opts.titulo : `🛍 AÑADIR PRODUCTO · ${esc(r.clientName || '')}`;
       this._pendingProdReserva = r;
       this._productoCart = [];
       this._productoSearchQ = '';
       this._productoMetodoPago = 'Efectivo';
       this._productosCache = this._productosCache || null;
       const box = this._openSubModal(`
-        <div class="ks-modal-head"><span class="ks-modal-staff">🛍 AÑADIR PRODUCTO · ${esc(r.clientName || '')}</span><button class="ks-modal-x" id="pdX">✕</button></div>
+        <div class="ks-modal-head"><span class="ks-modal-staff">${tituloModal}</span><button class="ks-modal-x" id="pdX">✕</button></div>
         <div id="pdBody" style="margin-top:14px;font-size:13px;color:var(--ks-ink2);">Cargando catálogo…</div>
       `);
       box.id = 'subModalProducto';
@@ -4890,6 +7769,13 @@ button { font-family: inherit; cursor: pointer; }
     }
     _closeProductoModal() {
       this._pendingProdReserva = null;
+      // v1.1.85 — limpiar el estado de la venta de TIENDA
+      this._ventaTiendaActiva = false;
+      this._ventaTiendaKey = '';
+      this._ventaTiendaTotal = 0;
+      this._ventaDoc = null;
+      this._ventaForm = false;
+      this._ventaGenerando = false;
       this._productoCart = [];
       this._productoSearchQ = '';
       this._closeSubModal();
@@ -5248,7 +8134,7 @@ button { font-family: inherit; cursor: pointer; }
         <p class="ks-blank-note">Cliente: <b>${esc(this._cliente.nombre)}</b>. Al armar, haz click sobre la columna del personal y hora deseados (igual que un servicio del catálogo).</p>
         <label class="ks-field"><span>Descripción del servicio</span><input id="bDesc" placeholder="Ej. Tratamiento especial" autofocus></label>
         <div class="ks-field-row">
-          <label class="ks-field"><span>Duración (min)</span><input id="bDur" type="number" min="5" step="5" value="30"></label>
+          <label class="ks-field"><span>Duración (min)</span><input id="bDur" type="number" min="1" step="1" value="30"></label>
           <label class="ks-field"><span>Precio (€)</span><input id="bPrice" type="number" min="0" step="0.01" placeholder="0"></label>
         </div>
         <div class="ks-blank-foot"><button class="ks-detail-cancel" id="bcancel">Cancelar</button><button class="ks-detail-add" id="bsave">Armar</button></div>`;
@@ -5260,7 +8146,7 @@ button { font-family: inherit; cursor: pointer; }
         const dur = parseInt(form.querySelector('#bDur').value, 10) || 0;
         const precio = parseFloat(form.querySelector('#bPrice').value) || 0;
         if (!desc) { this._toast('Falta descripción'); return; }
-        if (!dur || dur < 5) { this._toast('Duración mínimo 5 min'); return; }
+        if (!dur || dur < 1) { this._toast('Duración mínimo 1 min'); return; }
         if (precio < 0) { this._toast('Precio inválido'); return; }
         // Armar como un servicio normal pero con flag medida
         this._armed = {
@@ -5290,6 +8176,7 @@ button { font-family: inherit; cursor: pointer; }
       this._cajaData = null;
       this._cajaContado = 0;
       this._cajaNota = '';
+      this._cajaContadoTouched = false;   // v1.1.88 — permite hidratar desde d.registro
       const root = this.shadowRoot;
       root.getElementById('cajaScrim')?.remove();
       const scrim = document.createElement('div'); scrim.className = 'ks-modal-scrim'; scrim.id = 'cajaScrim';
@@ -5312,8 +8199,21 @@ button { font-family: inherit; cursor: pointer; }
       const d = this._cajaData || {};
       if (d.error) { body.innerHTML = `<div class="ks-empty">Error: ${esc(d.error)}</div>`; return; }
       const cerrada = d.registro && d.registro.status === 'closed';
+      const guardado = d.registro && d.registro.status === 'saved';
       const st = this.shadowRoot.getElementById('cajaStatus');
       if (st) { st.textContent = cerrada ? 'Cerrada' : (d.registro?.status === 'saved' ? 'Guardada' : 'Abierta'); st.className = 'ks-modal-status ' + (cerrada ? 'paid' : 'pending'); }
+
+      // v1.1.88 — Hidratar el conteo ya guardado. Mientras el usuario no
+      // haya tecleado nada en esta apertura del modal, el input y la
+      // diferencia se pintan con lo que hay en CashRegister, no con 0.
+      if (!this._cajaContadoTouched && d.registro) {
+        if (d.registro.countedCash != null) this._cajaContado = Number(d.registro.countedCash) || 0;
+        if (!this._cajaNota && d.registro.differenceNote) this._cajaNota = String(d.registro.differenceNote);
+      }
+
+      // v1.1.94 — estado de las confirmaciones de datáfono y Bizum
+      const cardOk = !!(d.registro && d.registro.cardConfirmed === true);
+      const bizumOk = !!(d.registro && d.registro.bizumConfirmed === true);
 
       const esperado = Number(d.esperado || 0);
       const contado = Number(this._cajaContado || 0);
@@ -5323,6 +8223,7 @@ button { font-family: inherit; cursor: pointer; }
       body.innerHTML = `
         <div class="ks-modal-items">
           <div class="ks-modal-item"><span class="ks-item-label">Fondo inicial</span><span class="ks-item-price">${Number(d.fondoInicial || 0)}€</span></div>
+          ${cerrada ? '' : `<div class="ks-disc-row" style="margin:2px 0 6px"><span class="ks-disc-lbl" style="font-size:11px;color:var(--ks-ink2)">Forzar fondo inicial</span><div class="ks-disc-input" style="display:flex;align-items:center;gap:6px"><input id="cajaFondo" type="number" min="0" step="0.01" value="" placeholder="${Number(d.fondoInicial || 0)}" style="width:72px;text-align:right;border:1px solid var(--ks-line);border-radius:6px;padding:3px 6px;font:inherit;color:var(--ks-ink)"><span>€</span><button id="cajaFondoSave" style="border:0;background:var(--ks-accent);color:#2a230f;border-radius:6px;padding:4px 9px;font-size:11px;font-weight:700;cursor:pointer">Forzar</button></div></div>`}
           <div class="ks-modal-item"><span class="ks-item-label">Cobros en efectivo</span><span class="ks-item-price">${Number(d.cobrosEfectivo || 0)}€</span></div>
           ${d.entradas ? `<div class="ks-modal-item"><span class="ks-item-label">+ Entradas manuales</span><span class="ks-item-price">${d.entradas}€</span></div>` : ''}
           ${d.salidas ? `<div class="ks-modal-item is-compl"><span class="ks-item-label">− Salidas</span><span class="ks-item-price">${d.salidas}€</span></div>` : ''}
@@ -5342,6 +8243,14 @@ button { font-family: inherit; cursor: pointer; }
         <div class="ks-modal-pays" style="margin-top:10px">
           <button class="ks-pay pay-tarjeta" id="cajaGuardar" style="flex:1">Guardar arqueo</button>
           ${this._cajaModo === 'cierre' ? `<button class="ks-pay pay-efectivo" id="cajaCerrar" style="flex:1">🔒 Cerrar día</button>` : ''}
+        </div>
+        ${guardado ? `<div style="text-align:center;margin-top:8px;font-size:12px;font-weight:800;color:oklch(0.5 0.14 150)">✓ Arqueo guardado${d.registro && d.registro.difference != null ? ` · dif ${Number(d.registro.difference)}€` : ''}</div>` : ''}
+        <!-- v1.1.94 — Confirmación de lecturas. No concilia importe a
+             importe: deja constancia de que alguien lo ha comprobado. -->
+        <div class="ks-conf-block">
+          <div class="ks-conf-hint">Confirma si la lectura coincide con el informe</div>
+          <button class="ks-conf-btn ${cardOk ? 'is-ok' : ''}" id="cajaConfCard">${cardOk ? '✓ Datáfono confirmado' : 'Confirmar datáfono'}</button>
+          <button class="ks-conf-btn ${bizumOk ? 'is-ok' : ''}" id="cajaConfBizum">${bizumOk ? '✓ Bizum confirmado' : 'Confirmar Bizum'}</button>
         </div>`}
         ${movimientos.length ? `<div class="ks-modal-items" style="border-top:1px solid var(--ks-line2);margin-top:8px"><div class="ks-eyebrow" style="padding:6px 0">Movimientos del día</div>${movimientos.map(m => `<div class="ks-modal-item"><span class="ks-item-label">${esc(this._movLabel(m.movementType))} · ${esc(m.description || '')}</span><span class="ks-item-price">${Number(m.amount || 0)}€</span></div>`).join('')}</div>` : ''}
         <div class="ks-modal-foot"><span></span><button class="ks-modal-close" id="cajaClose">Cerrar</button></div>`;
@@ -5350,6 +8259,7 @@ button { font-family: inherit; cursor: pointer; }
       if (!cerrada) {
         const inp = body.querySelector('#cajaContado');
         inp?.addEventListener('input', e => {
+          this._cajaContadoTouched = true;   // v1.1.88 — a partir de aquí manda lo tecleado
           this._cajaContado = parseFloat(e.target.value) || 0;
           const nd = Math.round((this._cajaContado - esperado) * 100) / 100;
           const el = body.querySelector('#cajaDif');
@@ -5359,6 +8269,20 @@ button { font-family: inherit; cursor: pointer; }
         body.querySelector('#movEntry')?.addEventListener('click', () => this._cajaMovimiento('entry'));
         body.querySelector('#movExit')?.addEventListener('click', () => this._cajaMovimiento('exit'));
         body.querySelector('#movWithdraw')?.addEventListener('click', () => this._cajaMovimiento('withdrawal'));
+        // v1.1.73 — Forzar fondo inicial: sobrescribe openingBalance del día.
+        // Con el campo vacío no hace nada (evita forzar 0 por accidente).
+        body.querySelector('#cajaFondoSave')?.addEventListener('click', () => {
+          const raw = body.querySelector('#cajaFondo')?.value;
+          if (raw === '' || raw == null) { this._toast('Escribe un importe para forzar el fondo'); return; }
+          const v = parseFloat(raw) || 0;
+          this._sendToPage('caja-set-fondo', { fechaISO: this._fecha, openingBalance: v });
+        });
+        // v1.1.94 — confirmar / deshacer lectura de datáfono y Bizum
+        const _conf = (metodo, estadoActual) => {
+          this._sendToPage('caja-confirmar-metodo', { fechaISO: this._fecha, metodo, confirmado: !estadoActual });
+        };
+        body.querySelector('#cajaConfCard')?.addEventListener('click', () => _conf('card', cardOk));
+        body.querySelector('#cajaConfBizum')?.addEventListener('click', () => _conf('bizum', bizumOk));
         body.querySelector('#cajaGuardar')?.addEventListener('click', () => {
           this._sendToPage('caja-guardar', { fechaISO: this._fecha, countedCash: this._cajaContado, differenceNote: this._cajaNota, countBreakdown: '', closedBy: '' });
         });
@@ -5591,7 +8515,7 @@ button { font-family: inherit; cursor: pointer; }
       // BLOQUE 1 — RENDIMIENTO PRODUCTIVO
       // ═══════════════════════════════════════════════════
       h += `<div class="cierre-block cierre-block-rend">`;
-      h += `<div class="cierre-block-title"><span class="cierre-block-emoji">📈</span> Rendimiento productivo<span class="cierre-block-sub">trabajo del día — filtra por fecha de cita</span></div>`;
+      h += `<div class="cierre-block-title"><span class="cierre-block-emoji">📈</span> Rendimiento productivo<span class="cierre-block-sub">trabajo del día — filtra por fecha de cita</span><button id="btnCopiarRend" class="cierre-copybtn" title="Copiar rendimiento productivo">📋 COPIAR</button></div>`;
 
       // Header cobrado/pendiente/total
       h += `<div class="cierre-headergrid">
@@ -5600,8 +8524,24 @@ button { font-family: inherit; cursor: pointer; }
       </div>`;
       h += `<div class="cierre-headertotal"><div class="cierre-headertotal-label">TOTAL DEL DÍA</div><div class="cierre-headertotal-val">${eur(rendimiento.total)}</div><div class="cierre-headertotal-sub">${rendimiento.clientesTotal} clientes</div></div>`;
 
-      // Servicios del día
-      if (rendimiento.servicios?.length) {
+      // Servicios del día — v1.1.92: agrupados por profesional (atribución
+      // por fase, la calcula cierreLogicExtendido v1.1.6). Si el backend es
+      // anterior no manda serviciosPorStaff y cae al listado plano de antes.
+      if (rendimiento.serviciosPorStaff?.length) {
+        h += `<div class="cierre-section"><div class="cierre-section-title">✂️ Servicios del día</div>`;
+        for (const g of rendimiento.serviciosPorStaff) {
+          h += `<div class="cierre-staffgroup"><span class="cierre-staffgroup-name">${esc(g.staffName)}</span><span class="cierre-staffgroup-tot">${eur(g.total)}</span></div>`;
+          for (const s of g.servicios) {
+            // v1.1.93 — hora de la fase + clienta: el servicio se localiza
+            // en el calendario sin tener que buscarlo.
+            const qty = s.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${s.cantidad}</span>` : '';
+            const hora = s.hora ? `<b>${esc(s.hora)}</b> · ` : '';
+            const cli = s.cliente ? ` <span style="color:#9ca3af;font-size:10px;">${esc(s.cliente)}</span>` : '';
+            h += `<div class="cierre-row cierre-row-ind"><span class="cierre-nombre">${hora}${esc(s.nombre)}${qty}${cli}</span><span class="cierre-importe">${eur(s.total)}</span></div>`;
+          }
+        }
+        h += `</div>`;
+      } else if (rendimiento.servicios?.length) {
         h += `<div class="cierre-section"><div class="cierre-section-title">✂️ Servicios del día</div>`;
         for (const s of rendimiento.servicios) {
           const subtitle = s.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">${eur(s.total / s.cantidad)} ×${s.cantidad} =</span>` : '';
@@ -5610,20 +8550,111 @@ button { font-family: inherit; cursor: pointer; }
         h += `</div>`;
       }
 
-      // Clientes del día
-      if (rendimiento.clientes?.length) {
+      // Clientes del día — v1.1.92: agrupadas por profesional y con chip de
+      // método de cobro además del de estado.
+      const _chipEstado = (st) => st === 'PAGADO'
+        ? '<span style="color:#15803d;font-size:9px;font-weight:700;letter-spacing:.5px;background:rgba(21,128,61,.12);padding:1px 5px;border-radius:4px;margin-left:6px;">PAGADO</span>'
+        : '<span style="color:#a55b00;font-size:9px;font-weight:700;letter-spacing:.5px;background:rgba(165,91,0,.12);padding:1px 5px;border-radius:4px;margin-left:6px;">PDTE</span>';
+      const _chipMetodo = (m) => {
+        if (!m) return '';
+        const ico = { 'Efectivo': '💵', 'Tarjeta': '💳', 'Bizum': '📲', 'Mixto': '🔀', 'Canje': '🎟️' }[m] || '💰';
+        return `<span style="color:#4b5563;font-size:9px;font-weight:700;letter-spacing:.4px;background:rgba(75,85,99,.10);padding:1px 5px;border-radius:4px;margin-left:4px;">${ico} ${esc(m)}</span>`;
+      };
+      // v1.1.93 — quién pasó el cobro. Sin login → Administrador.
+      const _chipCobrador = (c) => {
+        if (c.status !== 'PAGADO') return '';
+        const quien = (c.cobradoPor && String(c.cobradoPor).trim()) || 'Administrador';
+        return `<span style="color:#4b5563;font-size:9px;font-weight:700;letter-spacing:.4px;background:rgba(75,85,99,.10);padding:1px 5px;border-radius:4px;margin-left:4px;">👤 ${esc(quien)}</span>`;
+      };
+      const _importeCli = (c) => {
+        const hayDesc = c.descLabel && c.bruto && c.bruto > c.total;
+        return hayDesc
+          ? `<span style="color:#9ca3af;text-decoration:line-through;font-size:10.5px;margin-right:4px;">${eur(c.bruto)}</span><span style="color:#d48a1a;font-size:10px;font-weight:700;margin-right:4px;">${esc(c.descLabel)}</span>${eur(c.total)}`
+          : `${eur(c.total)}`;
+      };
+      const _filaCliente = (c) => {
+        const svcs = (c.servicios || []).map(s => esc(s.nombre)).filter(Boolean).join(' · ');
+        const compart = c.compartida ? ' <span style="color:#8b5cf6;font-size:9px;font-weight:700;">⇄ compartida</span>' : '';
+        return `<div class="cierre-row cierre-row-ind"><span class="cierre-nombre"><b>${esc(c.hora || '')}</b> · <b>${esc(c.nombre)}</b>${svcs ? ' — ' + svcs : ''}${compart}${_chipEstado(c.status)}${_chipMetodo(c.metodoPago)}${_chipCobrador(c)}</span><span class="cierre-importe">${_importeCli(c)}</span></div>`;
+      };
+
+
+      // v1.1.102 — RECUENTO POR BOTÓN DE COBRO.
+      // Agrega EXACTAMENTE las mismas filas de "Clientes del día" que
+      // acaban de pintarse arriba, agrupadas por el botón que se pulsó
+      // en el modal de cada cita. Sirve para auditar: si hay dudas o
+      // descuadre, el staff recorre cita por cita y compara.
+      // OJO: es un recuento de PULSACIONES, no un cuadre de caja. Por
+      // eso 'Mixto' es una cesta propia (fue un botón) y NO se reparte
+      // entre Tarjeta/Efectivo/Bizum — ese reparto vive en el Cierre
+      // financiero, que es otra pregunta distinta.
+      // Nada se esconde: una cita PAGADA sin método registrado sale en
+      // su propia línea marcada, no se mezcla con las demás.
+      // v1.1.103 — Las citas de profesional EXTERNO llevan su propia
+      // línea, con el botón que se pulsó y el añadido · EXTERNO. Ese
+      // dinero pasa por el calendario del salón pero el salón no lo
+      // ingresa, así que no se mezcla con el resto — pero tampoco se
+      // esconde ni se manda a ninguna cesta indeterminada.
+      const _recuentoBotones = (clientes) => {
+        const ORDEN = ['Tarjeta', 'Efectivo', 'Bizum', 'Mixto', 'Canje'];
+        const acc = {};
+        for (const c of (clientes || [])) {
+          if (c.status !== 'PAGADO') continue;
+          const met = String(c.metodoPago || '').trim();
+          // Sin método NO es una categoría: es que falta la fila del cobro
+          // en el CMS. Se nombra como el defecto que es, para ir a por él.
+          const base = met || '⚠️ Cobro sin fila en el CMS — revisar';
+          const k = c.esExterno ? base + ' · EXTERNO' : base;
+          if (!acc[k]) acc[k] = { metodo: k, n: 0, importe: 0, base, ext: !!c.esExterno, roto: !met };
+          acc[k].n += 1;
+          acc[k].importe += Number(c.total) || 0;
+        }
+        const claves = Object.keys(acc);
+        const rank = (x) => {
+          const i = ORDEN.indexOf(x.base);
+          return (x.roto ? 200 : 0) + (x.ext ? 100 : 0) + (i === -1 ? 50 : i);
+        };
+        const out = claves.map(k => acc[k]).sort((a, b) => rank(a) - rank(b));
+        for (const x of out) x.importe = Math.round(x.importe * 100) / 100;
+        return out;
+      };
+
+      if (rendimiento.clientesPorStaff?.length) {
+        const nCli = rendimiento.clientes?.length || 0;
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">👥 Clientes del día (${nCli})</div>`;
+        for (const g of rendimiento.clientesPorStaff) {
+          h += `<div class="cierre-staffgroup"><span class="cierre-staffgroup-name">${esc(g.staffName)}</span><span class="cierre-staffgroup-tot">${g.clientes.length} · ${eur(g.total)}</span></div>`;
+          for (const c of g.clientes) h += _filaCliente(c);
+        }
+        h += `</div>`;
+      } else if (rendimiento.clientes?.length) {
         h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">👥 Clientes del día (${rendimiento.clientes.length})</div>`;
-        for (const c of rendimiento.clientes) {
-          const svcs = (c.servicios || []).map(s => esc(s.nombre)).filter(Boolean).join(' · ');
-          const badge = c.status === 'PAGADO'
-            ? '<span style="color:#15803d;font-size:9px;font-weight:700;letter-spacing:.5px;background:rgba(21,128,61,.12);padding:1px 5px;border-radius:4px;margin-left:6px;">PAGADO</span>'
-            : '<span style="color:#a55b00;font-size:9px;font-weight:700;letter-spacing:.5px;background:rgba(165,91,0,.12);padding:1px 5px;border-radius:4px;margin-left:6px;">PDTE</span>';
-          // v1.1.27 — si hay descuento, mostrar bruto tachado + neto
-          const hayDesc = c.descLabel && c.bruto && c.bruto > c.total;
-          const importeHTML = hayDesc
-            ? `<span style="color:#9ca3af;text-decoration:line-through;font-size:10.5px;margin-right:4px;">${eur(c.bruto)}</span><span style="color:#d48a1a;font-size:10px;font-weight:700;margin-right:4px;">${esc(c.descLabel)}</span>${eur(c.total)}`
-            : `${eur(c.total)}`;
-          h += `<div class="cierre-row"><span class="cierre-nombre"><b>${esc(c.hora || '')}</b> · <b>${esc(c.nombre)}</b>${svcs ? ' — ' + svcs : ''}${badge}</span><span class="cierre-importe">${importeHTML}</span></div>`;
+        for (const c of rendimiento.clientes) h += _filaCliente(c);
+        h += `</div>`;
+      }
+
+      // v1.1.102 — Cobros por botón pulsado
+      const _botones = _recuentoBotones(rendimiento.clientes);
+      if (_botones.length) {
+        const _icoBoton = { 'Efectivo': '💵', 'Tarjeta': '💳', 'Bizum': '📲', 'Mixto': '🔀', 'Canje': '🎟️' };
+        const _colBoton = { 'Efectivo': '#2a9d54', 'Tarjeta': '#2f6fd9', 'Bizum': '#a78bfa', 'Mixto': '#c9a44a', 'Canje': '#8b5cf6' };
+        let _nTot = 0, _impTot = 0, _nExt = 0, _impExt = 0;
+        for (const b of _botones) {
+          _nTot += b.n; _impTot += b.importe;
+          if (b.ext) { _nExt += b.n; _impExt += b.importe; }
+        }
+        _impTot = Math.round(_impTot * 100) / 100;
+        _impExt = Math.round(_impExt * 100) / 100;
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🔢 Cobros por botón pulsado (${_nTot})</div>`;
+        for (const b of _botones) {
+          const ico = b.roto ? '⚠️' : (_icoBoton[b.base] || '💰');
+          const col = b.roto ? '#d93636' : (b.ext ? '#8b5cf6' : (_colBoton[b.base] || '#9ca3af'));
+          const tagExt = b.ext ? ` <span style="color:#8b5cf6;font-size:9px;font-weight:700;letter-spacing:.5px;background:rgba(139,92,246,.12);padding:1px 5px;border-radius:4px;">EXTERNO</span>` : '';
+          h += `<div class="cierre-row"><span class="cierre-nombre"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${col};margin-right:6px;"></span>${ico} ${esc(b.base)}${tagExt} <span style="color:#9ca3af;font-size:10px;">· ${b.n} ${b.n === 1 ? 'cobro' : 'cobros'}</span></span><span class="cierre-importe">${eur(b.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total cobros del día</span><span class="cierre-importe" style="font-weight:700;">${_nTot} · ${eur(_impTot)}</span></div>`;
+        if (_nExt > 0) {
+          h += `<div class="cierre-row"><span class="cierre-nombre" style="color:#8b5cf6;font-size:10.5px;">De los cuales EXTERNO — no entra en la caja del salón</span><span class="cierre-importe" style="color:#8b5cf6;font-size:11px;">${_nExt} · ${eur(_impExt)}</span></div>`;
         }
         h += `</div>`;
       }
@@ -5649,15 +8680,42 @@ button { font-family: inherit; cursor: pointer; }
         h += `</div>`;
       }
 
-      // Productos vendidos (rendimiento)
-      if (rendimiento.productos?.length) {
-        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🛒 Productos vendidos</div>`;
+      // v1.1.92 — VENTA DE PRODUCTOS. Vender también es productividad, así
+      // que el bloque vive en Rendimiento con cliente + producto + importe.
+      // Se pinta SIEMPRE: un día sin ventas es un dato, no un hueco.
+      const _prodDet = cierre.productosDetalle || null;
+      h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🛒 Venta de productos</div>`;
+      if (_prodDet && _prodDet.length) {
+        for (const p of _prodDet) {
+          const qty = p.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${p.cantidad}</span>` : '';
+          const cli = p.cliente ? `<b>${esc(p.cliente)}</b> — ` : '';
+          h += `<div class="cierre-row"><span class="cierre-nombre">${cli}${esc(p.producto)}${qty}</span><span class="cierre-importe">${eur(p.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total productos</span><span class="cierre-importe" style="font-weight:700;">${eur(cierre.productosTotal || 0)}</span></div>`;
+      } else if (!_prodDet && rendimiento.productos?.length) {
+        // Backend anterior a v1.1.6: solo hay agregado sin cliente.
         for (const p of rendimiento.productos) {
           const sub = p.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${p.cantidad}</span>` : '';
           h += `<div class="cierre-row"><span class="cierre-nombre">${esc(p.nombre)}${sub}</span><span class="cierre-importe">${eur(p.total)}</span></div>`;
         }
-        h += `</div>`;
+      } else {
+        h += `<div class="cierre-row cierre-row-vacio">Sin actividad</div>`;
       }
+      h += `</div>`;
+
+      // v1.1.92 — VENTA DE ESPECIALES (Bono 🎟️ / PRIME ⭐ / Tarjeta 🎁).
+      const _espDet = cierre.especiales || null;
+      h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🎟️ Venta de especiales</div>`;
+      if (_espDet && _espDet.length) {
+        for (const e of _espDet) {
+          const cli = e.cliente ? `<b>${esc(e.cliente)}</b> — ` : '';
+          h += `<div class="cierre-row"><span class="cierre-nombre">${cli}${esc(e.concepto)}</span><span class="cierre-importe">${eur(e.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total especiales</span><span class="cierre-importe" style="font-weight:700;">${eur(cierre.especialesTotal || 0)}</span></div>`;
+      } else {
+        h += `<div class="cierre-row cierre-row-vacio">Sin actividad</div>`;
+      }
+      h += `</div>`;
 
       // Externos (bruto)
       if (rendimiento.externos?.length) {
@@ -5681,7 +8739,7 @@ button { font-family: inherit; cursor: pointer; }
       // BLOQUE 2 — CIERRE FINANCIERO
       // ═══════════════════════════════════════════════════
       h += `<div class="cierre-block cierre-block-fin">`;
-      h += `<div class="cierre-block-title"><span class="cierre-block-emoji">💰</span> Cierre financiero<span class="cierre-block-sub">dinero entrado en caja — filtra por fecha de pago</span></div>`;
+      h += `<div class="cierre-block-title"><span class="cierre-block-emoji">💰</span> Cierre financiero<span class="cierre-block-sub">dinero entrado en caja — filtra por fecha de pago</span><button id="btnCopiarFin" class="cierre-copybtn" title="Copiar cierre financiero">📋 COPIAR</button></div>`;
 
       h += `<div class="cierre-headergrid">
         <div class="cierre-headercard ok" style="grid-column:span 2;"><div class="cierre-headercard-label">TOTAL COBRADO REAL</div><div class="cierre-headercard-val">${eur(cierre.totalReal)}</div><div class="cierre-headercard-sub">${cierre.transacciones} transacciones</div></div>
@@ -5722,7 +8780,7 @@ button { font-family: inherit; cursor: pointer; }
 
       // Productividad staff financiera
       if (cierre.staff?.length) {
-        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">💼 Cobrado por staff</div>`;
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">💼 Cobrado por staff <span style="color:#9ca3af;font-size:9.5px;font-weight:600;text-transform:none;letter-spacing:0;">· quién pasó el cobro</span></div>`;
         for (const s of cierre.staff) {
           const ext = s.isExternal ? ` <span style="color:#a78bfa;font-size:9px;font-weight:700;background:rgba(167,139,250,.12);padding:1px 5px;border-radius:4px;">EXT</span>` : '';
           h += `<div class="cierre-row"><span class="cierre-nombre"><b>${esc(s.staffName)}</b>${ext} <span style="color:#9ca3af;font-size:10px;">${s.citas} cobros</span></span><span class="cierre-importe">${eur(s.cobrado)}</span></div>`;
@@ -5730,13 +8788,53 @@ button { font-family: inherit; cursor: pointer; }
         h += `</div>`;
       }
 
-      // Productos
-      if (cierre.productos?.length) {
+      // Productos — v1.1.92: detalle con cliente y chip del empleado que
+      // despachó. `soldBy` lo graba tiendaProductos v1.5.13 con el usuario
+      // logueado en Recepción; vacío = sin capa de acceso → Administrador.
+      const _chipVendedor = (quien) => {
+        const nombre = (quien && String(quien).trim()) || 'Administrador';
+        return `<span style="color:#4b5563;font-size:9px;font-weight:700;letter-spacing:.4px;background:rgba(75,85,99,.10);padding:1px 5px;border-radius:4px;margin-left:6px;">👤 ${esc(nombre)}</span>`;
+      };
+      if (cierre.productosDetalle?.length) {
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🛒 Productos cobrados hoy</div>`;
+        for (const p of cierre.productosDetalle) {
+          const qty = p.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${p.cantidad}</span>` : '';
+          const cli = p.cliente ? `<b>${esc(p.cliente)}</b> — ` : '';
+          h += `<div class="cierre-row"><span class="cierre-nombre">${cli}${esc(p.producto)}${qty}${_chipVendedor(p.soldBy)}</span><span class="cierre-importe">${eur(p.importe)}</span></div>`;
+        }
+        h += `</div>`;
+      } else if (cierre.productos?.length) {
         h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🛒 Productos cobrados hoy</div>`;
         for (const p of cierre.productos) {
           const sub = p.cantidad > 1 ? ` <span style="color:#9ca3af;font-size:10px;">×${p.cantidad}</span>` : '';
           h += `<div class="cierre-row"><span class="cierre-nombre">${esc(p.nombre)}${sub}</span><span class="cierre-importe">${eur(p.total)}</span></div>`;
         }
+        h += `</div>`;
+      }
+
+      // v1.1.92 — PENDIENTE DE COBRAR: lo que se ha trabajado hoy y aún no
+      // ha entrado en caja. Cliente + servicios + profesional que lo hizo.
+      if (rendimiento.pendientes?.length) {
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">⏳ Pendiente de cobrar</div>`;
+        for (const pd of rendimiento.pendientes) {
+          const svcs = (pd.servicios || []).map(x => esc(x)).filter(Boolean).join(' · ');
+          h += `<div class="cierre-row"><span class="cierre-nombre"><b>${esc(pd.hora || '')}</b> · <b>${esc(pd.cliente)}</b>${svcs ? ' — ' + svcs : ''} <span style="color:#9ca3af;font-size:10px;">${esc(pd.staff)}</span></span><span class="cierre-importe" style="color:#a55b00;">${eur(pd.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total pendiente</span><span class="cierre-importe" style="font-weight:700;color:#a55b00;">${eur(rendimiento.pendientesTotal || 0)}</span></div>`;
+        h += `</div>`;
+      }
+
+      // v1.1.80 — Especiales vendidos hoy (Bono 🎟️ / PRIME ⭐ / Tarjeta 🎁).
+      // Requiere backend cierreLogicExtendido v1.1.5+. Si no está desplegado,
+      // cierre.especiales llega undefined y la sección no se pinta.
+      if (cierre.especiales?.length) {
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🎟️ Especiales vendidos hoy</div>`;
+        for (const e of cierre.especiales) {
+          const quien = e.cliente ? ` · <b>${esc(e.cliente)}</b>` : '';
+          const met = e.metodo ? ` <span style="color:#9ca3af;font-size:10px;">${esc(e.metodo)}</span>` : '';
+          h += `<div class="cierre-row"><span class="cierre-nombre">${esc(e.concepto)}${quien}${met}</span><span class="cierre-importe">${eur(e.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total especiales</span><span class="cierre-importe" style="font-weight:700;">${eur(cierre.especialesTotal || 0)}</span></div>`;
         h += `</div>`;
       }
 
@@ -5747,6 +8845,28 @@ button { font-family: inherit; cursor: pointer; }
           h += `<div class="cierre-row"><span class="cierre-nombre">${esc(e.cliente)} <span style="color:#9ca3af;font-size:10px;">${esc(e.staffName)} · ${e.pct}%</span></span><span class="cierre-importe">${eur(e.comision)}</span></div>`;
         }
         h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total comisiones</span><span class="cierre-importe" style="font-weight:700;">${eur(cierre.externosComisionTotal)}</span></div>`;
+        h += `</div>`;
+      }
+
+      // v1.1.61 — Servicios externos V2 (desde PagoreservasExternos vía
+      // cierreExternosLogic). Aditivo: no toca la sección previa
+      // "Comisiones externos". Solo se pinta si hay cobros externos.
+      const extV2 = d.externosV2 || null;
+      if (extV2 && extV2.citas > 0) {
+        const staffExt = (this._staff || []).find(s => s.isExternal);
+        const colExt = staffExt ? this._staffColor(staffExt.wixResourceId) : '';
+        const cStyle = colExt ? ` style="color:${colExt};"` : '';
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title"${cStyle}>Servicios externos</div>`;
+        for (const it of (extV2.desglose || [])) {
+          if (it.count && it.count > 1) {
+            const unit = it.count > 0 ? Math.round((it.ventaBruta / it.count) * 100) / 100 : 0;
+            h += `<div class="cierre-row"><span class="cierre-nombre">${esc(it.nombre)}</span><span style="color:#9ca3af;font-size:10px;margin:0 8px;">${eur(unit)} ×${it.count} =</span><span class="cierre-importe">${eur(it.ventaBruta)}</span></div>`;
+          } else {
+            h += `<div class="cierre-row"><span class="cierre-nombre">${esc(it.nombre)}</span><span class="cierre-importe">${eur(it.ventaBruta)}</span></div>`;
+          }
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Venta bruta externa</span><span class="cierre-importe">${eur(extV2.ventaBruta)}</span></div>`;
+        h += `<div class="cierre-row"><span class="cierre-nombre" style="font-weight:700;"${cStyle}>Comisión del salón</span><span class="cierre-importe"${cStyle}>${eur(extV2.comisionTotal)}</span></div>`;
         h += `</div>`;
       }
 
@@ -5775,9 +8895,65 @@ button { font-family: inherit; cursor: pointer; }
         h += `</div>`;
       }
 
+      // v1.1.94 — COBROS DE OTROS DÍAS. Dinero que entró hoy pero cuya cita
+      // es de otra fecha: es la explicación de por qué el cobrado de hoy no
+      // coincide con lo trabajado hoy.
+      const otrosDias = (reconciliacion && reconciliacion.cobrosDeOtrosDias) || [];
+      if (otrosDias.length) {
+        h += `<div class="cierre-section" style="margin-top:12px;"><div class="cierre-section-title">🔁 Cobros de otros días</div>`;
+        for (const c of otrosDias) {
+          const cita = c.fechaCita ? ` <span style="color:#8b5cf6;font-size:10px;font-weight:700;">cita ${esc(c.fechaCita)}${c.horaCita ? ' ' + esc(c.horaCita) : ''}</span>` : '';
+          const met = c.metodo ? ` <span style="color:#9ca3af;font-size:10px;">${esc(c.metodo)}</span>` : '';
+          const quien = `<span style="color:#4b5563;font-size:9px;font-weight:700;background:rgba(75,85,99,.10);padding:1px 5px;border-radius:4px;margin-left:4px;">👤 ${esc((c.cobradoPor || '').trim() || 'Administrador')}</span>`;
+          h += `<div class="cierre-row"><span class="cierre-nombre"><b>${esc(c.hora || '')}</b> · <b>${esc(c.cliente || 'Sin nombre')}</b>${cita}${met}${quien}</span><span class="cierre-importe">${eur(c.importe)}</span></div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:4px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total de otras fechas</span><span class="cierre-importe" style="font-weight:700;">${eur(reconciliacion.totalCobrosDeOtrosDias || 0)}</span></div>`;
+        h += `</div>`;
+      }
+
+      // v1.1.94 — OBSERVATORIO SEMANAL. Lunes a domingo de la semana de la
+      // fecha visible. Por día, lo cobrado en cada método y si está cuadrado.
+      // Un método sin cobros ese día no se marca: no hay nada que cuadrar.
+      const obs = d.observatorio || null;
+      if (obs && Array.isArray(obs.dias)) {
+        const chip = (estado) => {
+          if (estado === 'ok') return `<span class="obs-chip obs-ok">CUADRADO</span>`;
+          if (estado === 'pendiente') return `<span class="obs-chip obs-pdte">PENDIENTE</span>`;
+          return `<span class="obs-chip obs-na">—</span>`;
+        };
+        h += `<div class="cierre-section" style="margin-top:12px;border-top:2px solid #c9a44a;padding-top:12px;">`;
+        h += `<div class="cierre-section-title" style="font-size:13px;">📅 Observatorio semanal <span style="color:#9ca3af;font-size:9.5px;font-weight:600;text-transform:none;letter-spacing:0;">· ${esc(obs.desde)} → ${esc(obs.hasta)}</span></div>`;
+        for (const dia of obs.dias) {
+          const hoyTag = dia.esHoy ? ` <span style="color:#8b5cf6;font-size:9px;font-weight:800;">HOY</span>` : '';
+          h += `<div class="obs-day ${dia.futuro ? 'is-future' : ''}">`;
+          h += `<div class="obs-day-head"><span class="obs-day-name">${esc(dia.nombre)} ${dia.diaMes}${hoyTag}</span><span class="obs-day-tot">${eur(dia.total)}</span></div>`;
+          h += `<div class="obs-line"><span class="obs-met">💳 Tarjeta</span><span class="obs-imp">${eur(dia.tarjeta)}</span>${chip(dia.estadoTarjeta)}</div>`;
+          h += `<div class="obs-line"><span class="obs-met">💵 Efectivo</span><span class="obs-imp">${eur(dia.efectivo)}</span>${chip(dia.estadoEfectivo)}</div>`;
+          h += `<div class="obs-line"><span class="obs-met">📲 Bizum</span><span class="obs-imp">${eur(dia.bizum)}</span>${chip(dia.estadoBizum)}</div>`;
+          if (dia.otros > 0) h += `<div class="obs-line"><span class="obs-met">Otros</span><span class="obs-imp">${eur(dia.otros)}</span><span class="obs-chip obs-na">—</span></div>`;
+          h += `</div>`;
+        }
+        h += `<div class="cierre-row" style="border-top:1px solid #e2e5ea;margin-top:6px;padding-top:6px;"><span class="cierre-nombre" style="font-weight:700;">Total semana</span><span class="cierre-importe" style="font-weight:700;">${eur(obs.totales.total)}</span></div>`;
+        h += `<div class="cierre-row"><span class="cierre-nombre" style="color:#9ca3af;font-size:10.5px;">💳 ${eur(obs.totales.tarjeta)} · 💵 ${eur(obs.totales.efectivo)} · 📲 ${eur(obs.totales.bizum)}${obs.totales.otros ? ` · otros ${eur(obs.totales.otros)}` : ''}</span><span></span></div>`;
+        h += `</div>`;
+      }
+
       h += `</div>`;  // /cierre-block-fin
 
       grid.innerHTML = h || `<div class="cierre-section" style="text-align:center;padding:20px;color:#9ca3af;">Sin datos para hoy.</div>`;
+
+      // v1.1.63 — cablear botones COPIAR de cada bloque (se recrean en cada
+      // render del informe, por eso el binding va aquí tras pintar el grid).
+      const bR = grid.querySelector('#btnCopiarRend');
+      if (bR) bR.addEventListener('click', () => {
+        const t = this._cierreBloqueATexto('rend');
+        if (t) this._copyText(t, 'Rendimiento productivo copiado'); else this._toast('Sin datos para copiar');
+      });
+      const bF = grid.querySelector('#btnCopiarFin');
+      if (bF) bF.addEventListener('click', () => {
+        const t = this._cierreBloqueATexto('fin');
+        if (t) this._copyText(t, 'Cierre financiero copiado'); else this._toast('Sin datos para copiar');
+      });
     }
 
     // ═══════════════════════════════════════════════════
@@ -5980,6 +9156,364 @@ button { font-family: inherit; cursor: pointer; }
       });
     }
 
+    // ─── v1.1.62 · Niveles de acceso (capa de front) ───
+    // Gobierna qué acciones puede ejecutar el empleado logueado según su
+    // accessLevel (StaffConfig · Number 1-4), que llega en _empleadoActivo
+    // desde validateLoginPin. Solo actúa si la capa de login está activa
+    // (this._usersActivation, flag SalonConfig.usersActivation). Sin login
+    // activo o sin empleado → acceso total (comportamiento previo intacto).
+    //   1 Administrador · 2 Encargado · 3 Recepción · 4 Básico
+    // Sin nivel válido asignado → se trata como 4 (más restrictivo).
+    _puede(accion) {
+      if (!this._usersActivation || !this._empleadoActivo) return true;
+      const raw = Number(this._empleadoActivo.accessLevel);
+      const nv = (raw === 1 || raw === 2 || raw === 3) ? raw : 4;
+      switch (accion) {
+        case 'crearReserva':
+        case 'editarCita':
+        case 'cobrar':
+          return nv <= 3;
+        case 'bloqueo':
+        case 'arqueo':
+        case 'ajustes':
+          return nv <= 2;
+        case 'cierre':
+          // N1 cualquier día; N2 solo el día en curso.
+          return nv === 1 || (nv === 2 && this._fecha === todayISO());
+        default:
+          return false;
+      }
+    }
+
+    // ─── v1.1.63 · Copiar al portapapeles (patrón copyText del CRM Móvil) ───
+    // Texto plano con fallback execCommand para navegadores/contextos que
+    // no exponen navigator.clipboard. El textarea del fallback se ancla al
+    // Shadow DOM (this.shadowRoot) por ser un Custom Element.
+    _copyText(texto, msg) {
+      const ok = () => this._toast(msg || 'Copiado');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(texto).then(ok).catch(() => this._copyFallback(texto, ok));
+      } else {
+        this._copyFallback(texto, ok);
+      }
+    }
+    _copyFallback(texto, ok) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = texto;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        (this.shadowRoot || document.body).appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        ok();
+      } catch (e) {
+        this._toast('No se pudo copiar');
+      }
+    }
+
+    // ─── v1.1.63 · Componer texto plano de un bloque del informe del día ───
+    // tipo: 'rend' (rendimiento productivo, cabecera brandName) |
+    //       'fin'  (cierre financiero, cabecera legalName).
+    // Lee this._cierreData (mismos datos que pinta _renderCierre). No parsea
+    // HTML: usa las propiedades del objeto directamente. eur() ya existe.
+    _cierreBloqueATexto(tipo) {
+      const d = this._cierreData || {};
+      const ext = d.extendido || {};
+      const fecha = this._cierreFecha || this._fecha || '';
+      const L = [];
+
+      if (tipo === 'rend') {
+        const r = ext.rendimiento;
+        if (!r) return '';
+        const cab = this._salonBrandName ? `${this._salonBrandName} · ` : '';
+        L.push('📈 RENDIMIENTO PRODUCTIVO');
+        L.push(`${cab}${fecha}`);
+        L.push('');
+        L.push(`COBRADO: ${eur(r.cobrado)} (${r.clientesCobrados} clientes)`);
+        L.push(`PENDIENTE: ${eur(r.pendiente)} (${r.clientesPendientes} clientes)`);
+        L.push(`TOTAL DEL DÍA: ${eur(r.total)} (${r.clientesTotal} clientes)`);
+
+        if (r.servicios && r.servicios.length) {
+          L.push('');
+          L.push('✂️ Servicios del día');
+          // v1.1.94 — el texto copiado refleja lo que se ve: agrupado por
+          // profesional y con la hora de cada servicio.
+          if (r.serviciosPorStaff && r.serviciosPorStaff.length) {
+            for (const g of r.serviciosPorStaff) {
+              L.push(`  ${g.staffName.toUpperCase()} — ${eur(g.total)}`);
+              for (const s of g.servicios) {
+                const mult = s.cantidad > 1 ? ` ×${s.cantidad}` : '';
+                const cli = s.cliente ? ` (${s.cliente})` : '';
+                L.push(`  - ${s.hora || ''} ${s.nombre}${mult}${cli}: ${eur(s.total)}`);
+              }
+            }
+          } else {
+            for (const s of r.servicios) {
+              const mult = s.cantidad > 1 ? ` (${eur(s.total / s.cantidad)} ×${s.cantidad})` : '';
+              L.push(`- ${s.nombre}${mult}: ${eur(s.total)}`);
+            }
+          }
+        }
+        if (r.clientes && r.clientes.length) {
+          L.push('');
+          L.push(`👥 Clientes del día (${r.clientes.length})`);
+          const lineaCli = (c) => {
+            const svcs = (c.servicios || []).map(s => s.nombre).filter(Boolean).join(' · ');
+            const estado = c.status === 'PAGADO' ? '[PAGADO]' : '[PDTE]';
+            const met = c.metodoPago ? ` [${c.metodoPago}]` : '';
+            const quien = c.status === 'PAGADO' ? ` [${(c.cobradoPor || '').trim() || 'Administrador'}]` : '';
+            const comp = c.compartida ? ' (compartida)' : '';
+            return `  - ${c.hora || ''} ${c.nombre}${svcs ? ' — ' + svcs : ''}${comp} ${estado}${met}${quien}: ${eur(c.total)}`;
+          };
+          if (r.clientesPorStaff && r.clientesPorStaff.length) {
+            for (const g of r.clientesPorStaff) {
+              L.push(`  ${g.staffName.toUpperCase()} — ${g.clientes.length} · ${eur(g.total)}`);
+              for (const c of g.clientes) L.push(lineaCli(c));
+            }
+          } else {
+            for (const c of r.clientes) L.push(lineaCli(c));
+          }
+        }
+        // v1.1.102 — mismo recuento por botón que se ve en pantalla
+        if (r.clientes && r.clientes.length) {
+          const ORDEN_B = ['Tarjeta', 'Efectivo', 'Bizum', 'Mixto', 'Canje'];
+          const accB = {};
+          for (const c of r.clientes) {
+            if (c.status !== 'PAGADO') continue;
+            const met = String(c.metodoPago || '').trim();
+            const base = met || 'Cobro sin fila en el CMS - revisar';
+            const k = c.esExterno ? base + ' · EXTERNO' : base;
+            if (!accB[k]) accB[k] = { n: 0, importe: 0, base, ext: !!c.esExterno, roto: !met };
+            accB[k].n += 1;
+            accB[k].importe += Number(c.total) || 0;
+          }
+          const rankB = (x) => {
+            const i = ORDEN_B.indexOf(x.base);
+            return (x.roto ? 200 : 0) + (x.ext ? 100 : 0) + (i === -1 ? 50 : i);
+          };
+          const clavesB = Object.keys(accB).sort((a, b) => rankB(accB[a]) - rankB(accB[b]));
+          if (clavesB.length) {
+            let nTotB = 0, impTotB = 0, nExtB = 0, impExtB = 0;
+            L.push('');
+            L.push('🔢 Cobros por botón pulsado');
+            for (const k of clavesB) {
+              const b = accB[k];
+              nTotB += b.n;
+              impTotB += b.importe;
+              if (b.ext) { nExtB += b.n; impExtB += b.importe; }
+              L.push(`- ${k}: ${b.n} ${b.n === 1 ? 'cobro' : 'cobros'} · ${eur(b.importe)}`);
+            }
+            L.push(`Total cobros del día: ${nTotB} · ${eur(impTotB)}`);
+            if (nExtB > 0) L.push(`De los cuales EXTERNO (no entra en caja): ${nExtB} · ${eur(impExtB)}`);
+          }
+        }
+        if (r.descuentos && r.descuentos.length) {
+          L.push('');
+          L.push('🏷️ Descuentos aplicados');
+          for (const desc of r.descuentos) {
+            const tag = desc.labelDesc ? ` (${desc.labelDesc})` : '';
+            L.push(`- ${desc.label} · ${desc.cliente}${tag}: -${eur(desc.importe)}`);
+          }
+          L.push(`Total descuentos: -${eur(r.descuentoTotal)}`);
+        }
+        if (r.staff && r.staff.length) {
+          L.push('');
+          L.push('💼 Productividad por staff');
+          for (const s of r.staff) {
+            const e = s.isExternal ? ' [EXT]' : '';
+            const pdte = s.pendiente > 0 ? ` (+${eur(s.pendiente)} pdte)` : '';
+            L.push(`- ${s.staffName}${e} · ${s.citas} citas: ${eur(s.cobrado)}${pdte}`);
+          }
+        }
+        // v1.1.94 — venta de productos y especiales, siempre presentes
+        {
+          const cx = ext.cierre || {};
+          L.push('');
+          L.push('🛒 Venta de productos');
+          if (cx.productosDetalle && cx.productosDetalle.length) {
+            for (const p of cx.productosDetalle) {
+              const mult = p.cantidad > 1 ? ` ×${p.cantidad}` : '';
+              L.push(`- ${p.cliente ? p.cliente + ' — ' : ''}${p.producto}${mult}: ${eur(p.importe)}`);
+            }
+            L.push(`Total productos: ${eur(cx.productosTotal || 0)}`);
+          } else if (r.productos && r.productos.length) {
+            for (const p of r.productos) {
+              const mult = p.cantidad > 1 ? ` ×${p.cantidad}` : '';
+              L.push(`- ${p.nombre}${mult}: ${eur(p.total)}`);
+            }
+          } else {
+            L.push('Sin actividad');
+          }
+          L.push('');
+          L.push('🎟️ Venta de especiales');
+          if (cx.especiales && cx.especiales.length) {
+            for (const e of cx.especiales) {
+              L.push(`- ${e.cliente ? e.cliente + ' — ' : ''}${e.concepto}: ${eur(e.importe)}`);
+            }
+            L.push(`Total especiales: ${eur(cx.especialesTotal || 0)}`);
+          } else {
+            L.push('Sin actividad');
+          }
+        }
+        if (r.externos && r.externos.length) {
+          L.push('');
+          L.push('🔗 Servicios externos (bruto)');
+          for (const e of r.externos) {
+            L.push(`- ${e.cliente} · ${e.servicio} (${e.staffName}): ${eur(e.importe)}`);
+          }
+          L.push(`Bruto externos: ${eur(r.externosTotal)}`);
+        }
+        return L.join('\n');
+      }
+
+      if (tipo === 'fin') {
+        const c = ext.cierre;
+        if (!c) return '';
+        const r = ext.rendimiento || null;   // v1.1.94 — pendientes de cobro
+        const cab = this._salonLegalName ? `${this._salonLegalName} · ` : '';
+        L.push('💰 CIERRE FINANCIERO');
+        L.push(`${cab}${fecha}`);
+        L.push('');
+        L.push(`TOTAL COBRADO REAL: ${eur(c.totalReal)} (${c.transacciones} transacciones)`);
+
+        if (c.porMetodo && c.porMetodo.length) {
+          L.push('');
+          L.push('💳 Cobrado por método de pago');
+          for (const m of c.porMetodo) L.push(`- ${m.metodo}: ${eur(m.importe)}`);
+        }
+        if (c.descuentos && c.descuentos.length) {
+          L.push('');
+          L.push('🏷️ Descuentos aplicados');
+          for (const desc of c.descuentos) {
+            const tag = desc.labelDesc ? ` (${desc.labelDesc})` : '';
+            L.push(`- ${desc.cliente || 'Sin cliente'}${tag}: -${eur(desc.importe)}`);
+          }
+          L.push(`Total descuentos: -${eur(c.descuentoTotal || 0)}`);
+        }
+        if (c.iva) {
+          const iva = c.iva;
+          L.push('');
+          L.push(`📄 Desglose fiscal (IVA ${iva.vatRate}%)`);
+          L.push(`Total cobrado (IVA incluido): ${eur(iva.totalSinPropinas)}`);
+          if (iva.totalPropinas > 0) L.push(`(propinas excluidas: ${eur(iva.totalPropinas)})`);
+          L.push(`Base imponible: ${eur(iva.baseImponible)}`);
+          L.push(`Cuota IVA (${iva.vatRate}%): ${eur(iva.cuotaIVA)}`);
+        }
+        if (c.staff && c.staff.length) {
+          L.push('');
+          L.push('💼 Cobrado por staff · quién pasó el cobro');
+          for (const s of c.staff) {
+            const e = s.isExternal ? ' [EXT]' : '';
+            L.push(`- ${s.staffName}${e} · ${s.citas} cobros: ${eur(s.cobrado)}`);
+          }
+        }
+        if (c.productosDetalle && c.productosDetalle.length) {
+          L.push('');
+          L.push('🛒 Productos cobrados hoy');
+          for (const p of c.productosDetalle) {
+            const mult = p.cantidad > 1 ? ` ×${p.cantidad}` : '';
+            const quien = (p.soldBy || '').trim() || 'Administrador';
+            L.push(`- ${p.cliente ? p.cliente + ' — ' : ''}${p.producto}${mult} [${quien}]: ${eur(p.importe)}`);
+          }
+        } else if (c.productos && c.productos.length) {
+          L.push('');
+          L.push('🛒 Productos cobrados hoy');
+          for (const p of c.productos) {
+            const mult = p.cantidad > 1 ? ` ×${p.cantidad}` : '';
+            L.push(`- ${p.nombre}${mult}: ${eur(p.total)}`);
+          }
+        }
+        // v1.1.94 — pendiente de cobrar
+        if (r && r.pendientes && r.pendientes.length) {
+          L.push('');
+          L.push('⏳ Pendiente de cobrar');
+          for (const pd of r.pendientes) {
+            const svcs = (pd.servicios || []).join(' · ');
+            L.push(`- ${pd.hora || ''} ${pd.cliente}${svcs ? ' — ' + svcs : ''} (${pd.staff}): ${eur(pd.importe)}`);
+          }
+          L.push(`Total pendiente: ${eur(r.pendientesTotal || 0)}`);
+        }
+        // v1.1.94 — cobros de otros días
+        const rec = ext.reconciliacion;
+        if (rec && rec.cobrosDeOtrosDias && rec.cobrosDeOtrosDias.length) {
+          L.push('');
+          L.push('🔁 Cobros de otros días');
+          for (const co of rec.cobrosDeOtrosDias) {
+            const cita = co.fechaCita ? ` (cita ${co.fechaCita}${co.horaCita ? ' ' + co.horaCita : ''})` : '';
+            const met = co.metodo ? ` [${co.metodo}]` : '';
+            L.push(`- ${co.hora || ''} ${co.cliente || 'Sin nombre'}${cita}${met}: ${eur(co.importe)}`);
+          }
+          L.push(`Total de otras fechas: ${eur(rec.totalCobrosDeOtrosDias || 0)}`);
+        }
+        // v1.1.80 — Especiales vendidos hoy
+        if (c.especiales && c.especiales.length) {
+          L.push('');
+          L.push('🎟️ Especiales vendidos hoy');
+          for (const e of c.especiales) {
+            const quien = e.cliente ? ` · ${e.cliente}` : '';
+            const met = e.metodo ? ` (${e.metodo})` : '';
+            L.push(`- ${e.concepto}${quien}${met}: ${eur(e.importe)}`);
+          }
+          L.push(`Total especiales: ${eur(c.especialesTotal || 0)}`);
+        }
+        if (c.externos && c.externos.length) {
+          L.push('');
+          L.push('🔗 Comisiones externos');
+          for (const e of c.externos) {
+            L.push(`- ${e.cliente} (${e.staffName} · ${e.pct}%): ${eur(e.comision)}`);
+          }
+          L.push(`Total comisiones: ${eur(c.externosComisionTotal)}`);
+        }
+        const extV2 = d.externosV2;
+        if (extV2 && extV2.citas > 0) {
+          L.push('');
+          L.push('Servicios externos');
+          for (const it of (extV2.desglose || [])) {
+            const mult = (it.count && it.count > 1) ? ` ×${it.count}` : '';
+            L.push(`- ${it.nombre}${mult}: ${eur(it.ventaBruta)}`);
+          }
+          L.push(`Venta bruta externa: ${eur(extV2.ventaBruta)}`);
+          L.push(`Comisión del salón: ${eur(extV2.comisionTotal)}`);
+        }
+        const arq = d.arqueo;
+        if (arq) {
+          L.push('');
+          L.push('🏦 Arqueo de efectivo');
+          L.push(`Fondo inicial: ${eur(arq.fondoInicial || 0)}`);
+          L.push(`Cobros en efectivo: +${eur(arq.cobrosEfectivo || 0)}`);
+          if (arq.entradas) L.push(`Entradas manuales: +${eur(arq.entradas)}`);
+          if (arq.salidas) L.push(`Salidas manuales: -${eur(arq.salidas)}`);
+          if (arq.retiradas) L.push(`Retiradas: -${eur(arq.retiradas)}`);
+          L.push(`Efectivo esperado: ${eur(arq.esperado || 0)}`);
+          if (arq.status) {
+            L.push(`Efectivo contado: ${eur(arq.contado || 0)}`);
+            const dif = Math.round(((arq.contado || 0) - (arq.esperado || 0)) * 100) / 100;
+            L.push(Math.abs(dif) < 0.01 ? 'Caja cuadrada' : `Diferencia: ${dif >= 0 ? '+' : ''}${eur(dif)}`);
+          }
+        }
+        // v1.1.94 — observatorio semanal
+        const obs = d.observatorio;
+        if (obs && Array.isArray(obs.dias)) {
+          const et = (e) => e === 'ok' ? 'CUADRADO' : (e === 'pendiente' ? 'PENDIENTE' : '—');
+          L.push('');
+          L.push(`📅 Observatorio semanal (${obs.desde} → ${obs.hasta})`);
+          for (const dia of obs.dias) {
+            L.push(`${dia.nombre} ${dia.diaMes} — ${eur(dia.total)}`);
+            L.push(`  💳 Tarjeta ${eur(dia.tarjeta)} · ${et(dia.estadoTarjeta)}`);
+            L.push(`  💵 Efectivo ${eur(dia.efectivo)} · ${et(dia.estadoEfectivo)}`);
+            L.push(`  📲 Bizum ${eur(dia.bizum)} · ${et(dia.estadoBizum)}`);
+            if (dia.otros > 0) L.push(`  Otros ${eur(dia.otros)}`);
+          }
+          L.push(`Total semana: ${eur(obs.totales.total)}`);
+        }
+        return L.join('\n');
+      }
+
+      return '';
+    }
+
     // ─── toast ───
     _toast(msg) {
       const root = this.shadowRoot;
@@ -5988,6 +9522,966 @@ button { font-family: inherit; cursor: pointer; }
       root.appendChild(t);
       clearTimeout(this._toastTimer);
       this._toastTimer = setTimeout(() => t.remove(), 2600);
+    }
+
+
+    // ═══════════════════════════════════════════════════
+    // v1.1.76 — ALMACÉN (papelera y sacar de almacén)
+    // ═══════════════════════════════════════════════════
+    // Superficie de trabajo diario, no de administración: solo dos
+    // acciones, ambas permitidas a cualquier nivel de acceso. La gestión
+    // del almacén (alta, coste, mínimos, traspasos) vive en su pantalla.
+    _openAlmacen() {
+      this._almProductos = [];
+      this._almQ = '';
+      this._almCat = '';
+      this._almCargando = true;
+      this._almOcupado = {};
+      const root = this.shadowRoot;
+      root.getElementById('almScrim')?.remove();
+      const scrim = document.createElement('div');
+      scrim.className = 'alm-scrim';
+      scrim.id = 'almScrim';
+      root.appendChild(scrim);
+      this._renderAlmacen();
+      this._sendToPage('getAlmacenConsumibles', {});
+    }
+
+    _closeAlmacen() {
+      this.shadowRoot.getElementById('almScrim')?.remove();
+    }
+
+    _almFiltrados() {
+      const q = (this._almQ || '').trim().toLowerCase();
+      const cat = this._almCat || '';
+      return (this._almProductos || []).filter(p => {
+        if (cat && (p.category || '') !== cat) return false;
+        if (!q) return true;
+        return `${p.productName} ${p.brand} ${p.category}`.toLowerCase().includes(q);
+      });
+    }
+
+    _renderAlmacen() {
+      const scrim = this.shadowRoot.getElementById('almScrim');
+      if (!scrim) return;
+
+      const cats = Array.from(new Set((this._almProductos || [])
+        .map(p => (p.category || '').trim()).filter(c => c)))
+        .sort((a, b) => a.localeCompare(b, 'es'));
+
+      const lista = this._almFiltrados();
+
+      let cuerpo;
+      if (this._almCargando) {
+        cuerpo = '<div class="alm-empty">Cargando productos…</div>';
+      } else if (!lista.length) {
+        cuerpo = '<div class="alm-empty">No hay productos que coincidan.</div>';
+      } else {
+        cuerpo = lista.map(p => {
+          const ocupado = this._almOcupado[p.id] === true;
+          const meta = [p.brand, p.category, p.unit].filter(x => x).join(' · ');
+          return `<div class="alm-row" data-id="${esc(p.id)}">
+            ${p.imageUrl ? `<img class="alm-img" src="${esc(p.imageUrl)}" alt=""/>` : '<div class="alm-img"></div>'}
+            <div class="alm-main">
+              <div class="alm-name">${esc(p.productName)}</div>
+              <div class="alm-meta">${esc(meta)}${p.needsRestock ? ' · <span class="alm-low">⚠ reponer</span>' : ''}</div>
+            </div>
+            <div class="alm-cnt"><b>${p.stockStored}</b><span>Cerrados</span></div>
+            <div class="alm-cnt use"><b>${p.stockInUse}</b><span>En uso</span></div>
+            <div class="alm-acts">
+              <button class="alm-btn" data-alm="tirar" data-id="${esc(p.id)}" title="Bote terminado: tirar a la basura"${ocupado || p.total <= 0 ? ' disabled' : ''}>🗑️<small>TIRAR</small></button>
+              <button class="alm-btn" data-alm="sacar" data-id="${esc(p.id)}" title="Sacar un bote del almacén para empezarlo"${ocupado || p.stockStored <= 0 ? ' disabled' : ''}>📤<small>SACAR</small></button>
+            </div>
+          </div>`;
+        }).join('');
+      }
+
+      scrim.innerHTML = `<div class="alm-modal">
+        <div class="alm-head">
+          <span class="alm-title">🗄️ ALMACÉN · consumo del día</span>
+          <button class="alm-x" id="almX">✕</button>
+        </div>
+        <div class="alm-filters">
+          <input class="alm-input" id="almQ" type="text" placeholder="Buscar producto, marca o categoría…" value="${esc(this._almQ || '')}"/>
+          <select class="alm-sel" id="almCat">
+            <option value="">Todas las categorías</option>
+            ${cats.map(c => `<option value="${esc(c)}"${this._almCat === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="alm-list">${cuerpo}</div>
+        <div class="alm-foot">🗑️ TIRAR: bote terminado — descuenta uno del almacén y abre el siguiente. &nbsp;·&nbsp; 📤 SACAR: coger un bote para empezarlo, sin tirar ninguno.</div>
+      </div>`;
+
+      this._almRewire();
+    }
+
+    _almRewire() {
+      const scrim = this.shadowRoot.getElementById('almScrim');
+      if (!scrim) return;
+
+      scrim.addEventListener('click', (e) => { if (e.target === scrim) this._closeAlmacen(); }, { once: true });
+      scrim.querySelector('#almX')?.addEventListener('click', () => this._closeAlmacen());
+
+      const inp = scrim.querySelector('#almQ');
+      if (inp) {
+        inp.addEventListener('input', () => {
+          this._almQ = inp.value;
+          this._renderAlmacen();
+          // Devolver el foco y el cursor al final tras repintar.
+          const nuevo = this.shadowRoot.querySelector('#almQ');
+          if (nuevo) { nuevo.focus(); nuevo.setSelectionRange(nuevo.value.length, nuevo.value.length); }
+        });
+      }
+      scrim.querySelector('#almCat')?.addEventListener('change', (e) => {
+        this._almCat = e.target.value;
+        this._renderAlmacen();
+      });
+
+      scrim.querySelectorAll('[data-alm]').forEach(b => {
+        b.addEventListener('click', () => this._almAccion(b.dataset.alm, b.dataset.id));
+      });
+    }
+
+    // Firma del movimiento: el empleado logueado por PIN. Sin capa de
+    // login activa (usersActivation en false) se graba sin firma, igual
+    // que hace _logEvent.
+    _almFirma() {
+      const s = this._empleadoActivo;
+      if (!this._usersActivation || !s) return { staffId: '', staffName: '' };
+      return {
+        staffId: s._id || s.staffId || s.wixResourceId || '',
+        staffName: s.staffName || s.displayName || s.name || ''
+      };
+    }
+
+    _almAccion(accion, id) {
+      const p = (this._almProductos || []).find(x => x.id === id);
+      if (!p || this._almOcupado[id]) return;
+      if (accion === 'tirar' && p.total <= 0) return;
+      if (accion === 'sacar' && p.stockStored <= 0) return;
+
+      this._almOcupado[id] = true;
+      this._renderAlmacen();
+      this._sendToPage(accion === 'tirar' ? 'almacenPapelera' : 'almacenSacar', {
+        payload: { productId: id, ...this._almFirma() }
+      });
+      this._toast(accion === 'tirar' ? `🗑️ ${p.productName}` : `📤 ${p.productName}`);
+    }
+
+    _onAlmData(p) {
+      this._almCargando = false;
+      this._almProductos = Array.isArray(p.productos) ? p.productos : [];
+      if (p.error) this._toast('Almacén: ' + p.error);
+      this._renderAlmacen();
+    }
+
+    // Actualización en local con los contadores que devuelve el backend:
+    // no se relee la lista entera por cada clic.
+    _onAlmAccion(p) {
+      const d = p.data || {};
+      const id = d.productId || p.productId;
+      if (id) this._almOcupado[id] = false;
+
+      if (!d.ok) {
+        this._toast('Almacén: ' + (d.error || 'no se pudo registrar'));
+        this._renderAlmacen();
+        return;
+      }
+
+      const i = (this._almProductos || []).findIndex(x => x.id === id);
+      if (i >= 0) {
+        const it = this._almProductos[i];
+        it.stockStored = d.stockStored;
+        it.stockInUse = d.stockInUse;
+        it.total = (typeof d.total === 'number') ? d.total : (d.stockStored + d.stockInUse);
+        if (typeof d.needsRestock === 'boolean') it.needsRestock = d.needsRestock;
+        // Un producto que llega a cero sale del listado de consumo.
+        if (it.total <= 0) this._almProductos.splice(i, 1);
+      }
+      this._renderAlmacen();
+    }
+
+
+    // ═══════════════════════════════════════════════════
+    // v1.1.99 — FICHA TÉCNICA (CMS-first, ficha ÚNICA)
+    // ═══════════════════════════════════════════════════
+    // Popup del modal de la cita. Escribe en KamisuiteClientRecords a
+    // través de clientRecordsLogic v1.0.0 — una FILA POR ANOTACIÓN,
+    // nunca se sobrescribe nada.
+    //
+    // Las últimas visitas llegan SIN importes: el backend las filtra.
+    // El mensaje del Área de Cliente es SOLO LECTURA: es la voz del
+    // cliente y no se edita desde recepción.
+
+    // v1.1.98 — Acepta CUALQUIER contexto con cliente, no solo una reserva:
+    //   · desde el modal de la cita  → objeto reserva (contactId/clientName/
+    //     clientPhone/_id), y la anotación queda ligada a esa visita.
+    //   · desde el popup FICHA TÉCNICA → { contactId, nombre, telefono },
+    //     sin cita: la anotación se guarda sin bookingId, que es la verdad
+    //     — es del cliente, no de una visita concreta.
+    _openFichaTecnica(src) {
+      const ctx = {
+        contactId:   (src && src.contactId) || '',
+        clientName:  (src && (src.clientName || src.nombre)) || '',
+        clientPhone: (src && (src.clientPhone || src.telefono)) || '',
+        reservaId:   (src && (src._id || src.reservaId)) || ''
+      };
+
+      // Sin cliente en el contexto (botón de la barra), se HEREDA: primero
+      // el del panel izquierdo, que es lo que el operador tiene delante
+      // ahora mismo, y si no, el de la última cita abierta. Si no hay
+      // ninguno, el modal abre en modo búsqueda.
+      if (!ctx.contactId) {
+        const aside = this._cliente;
+        if (aside && aside.contactId) {
+          ctx.contactId = aside.contactId;
+          ctx.clientName = aside.nombre || '';
+          ctx.clientPhone = aside.telefono || '';
+        } else {
+          const u = this._fcUltimoCliente;
+          if (u && u.contactId) {
+            ctx.contactId = u.contactId;
+            ctx.clientName = u.nombre || '';
+            ctx.clientPhone = u.telefono || '';
+          }
+        }
+      }
+
+      // El buscador solo aparece cuando se entra por la barra superior.
+      // Desde la cita, el cliente es el de la cita y no se cambia.
+      this._fcBuscador = !(src && src._id);
+      this._fcCtx = ctx;
+      this._fcData = null;
+      this._fcCargando = !!ctx.contactId;
+      this._fcTab = 'COLOR';
+      this._fcGuardando = false;
+      this._fcBorrador = { COLOR: '', TRATAMIENTO: '', GENERAL: '' };
+
+      const root = this.shadowRoot;
+      root.getElementById('fcScrim')?.remove();
+      const scrim = document.createElement('div');
+      scrim.className = 'fc-scrim';
+      scrim.id = 'fcScrim';
+      root.appendChild(scrim);
+      this._renderFichaTecnica();
+
+      if (ctx.contactId) this._fcPedirDatos();
+    }
+
+    _fcPedirDatos() {
+      const c = this._fcCtx || {};
+      if (!c.contactId) return;
+      this._sendToPage('getFichaClienteRecords', {
+        contactId:   c.contactId,
+        clientName:  c.clientName,
+        clientPhone: c.clientPhone,
+        reservaId:   c.reservaId
+      });
+    }
+
+    _closeFichaTecnica() {
+      this.shadowRoot.getElementById('fcScrim')?.remove();
+      this._fcCtx = null;
+      this._fcData = null;
+    }
+
+    // Resultados del buscador. Canal ftBuscarCliente/ftClientesEncontrados,
+    // que filtra sobre el cache de contactos ya cargado — nada que ver con
+    // ningún histórico importado.
+    _fcRenderCli(clientes) {
+      const box = this.shadowRoot.getElementById('fcResults');
+      if (!box) return;
+      if (!clientes.length) { box.innerHTML = ''; box.style.display = 'none'; return; }
+      box.style.display = 'block';
+      box.innerHTML = clientes.map(c => `
+        <div class="fc-cli" data-cid="${esc(c.contactId || '')}" data-nom="${esc(c.nombreCompleto || '')}" data-tel="${esc(c.telefono || '')}">
+          <div class="fc-cli-name">${esc(c.nombreCompleto || '—')}</div>
+        </div>`).join('');
+      box.querySelectorAll('.fc-cli').forEach(el => {
+        el.addEventListener('click', () => {
+          const cid = el.getAttribute('data-cid');
+          if (!cid) { this._toast('Ese cliente no tiene ficha asociada'); return; }
+          this._fcCtx = {
+            contactId:   cid,
+            clientName:  el.getAttribute('data-nom') || '',
+            clientPhone: el.getAttribute('data-tel') || '',
+            reservaId:   ''
+          };
+          this._fcData = null;
+          this._fcCargando = true;
+          this._fcTab = 'COLOR';
+          this._fcBorrador = { COLOR: '', TRATAMIENTO: '', GENERAL: '' };
+          this._renderFichaTecnica();
+          this._fcPedirDatos();
+        });
+      });
+    }
+
+    _renderFichaTecnica() {
+      const scrim = this.shadowRoot.getElementById('fcScrim');
+      if (!scrim) return;
+      const c = this._fcCtx || {};
+      const d = this._fcData || {};
+      const tab = this._fcTab || 'COLOR';
+
+      let cuerpo = '';
+
+      if (!c.contactId) {
+        cuerpo = `<div class="fc-empty">Busca un cliente para ver y anotar su ficha técnica.</div>`;
+      } else if (this._fcCargando) {
+        cuerpo = `<div class="fc-empty">Cargando ficha…</div>`;
+      } else {
+        // v1.1.100 — Mensaje que el cliente dejó al reservar ESTA cita.
+        // Va primero: es lo que la recepción necesita leer antes de nada.
+        const notaReserva = String(d.notaReserva || '').trim();
+        const notaReservaHtml = notaReserva
+          ? `<div class="fc-notared">
+               <div class="fc-notared-h">✉ Mensaje del cliente en esta reserva</div>
+               <div class="fc-notared-t">${esc(notaReserva)}</div>
+             </div>`
+          : '';
+
+        const visitas = Array.isArray(d.visitas) ? d.visitas : [];
+        const visitasHtml = visitas.length
+          ? visitas.map(v => `
+              <div class="fc-visita">
+                <div class="fc-vh">
+                  <span class="fc-vfecha">${esc(v.fecha || '')}</span>
+                  <span class="fc-vhora">${esc(v.hora || '')}</span>
+                  ${v.profesional ? `<span class="fc-vof">${esc(v.profesional)}</span>` : ''}
+                </div>
+                <div class="fc-vsrv">${esc((v.servicios || []).join(' · ')) || '—'}</div>
+                ${v.nota ? `<div class="fc-notared" style="margin-top:8px;margin-bottom:0">
+                  <div class="fc-notared-h">✉ Mensaje del cliente</div>
+                  <div class="fc-notared-t">${esc(v.nota)}</div>
+                </div>` : ''}
+              </div>`).join('')
+          : `<div class="fc-nodata">Sin visitas anteriores registradas.</div>`;
+
+        const mensajes = Array.isArray(d.mensajeCliente) ? d.mensajeCliente : [];
+        const mensajesHtml = mensajes.length
+          ? `<div class="fc-sec mt">Mensaje del cliente desde su área</div>` +
+            mensajes.map(m => `
+              <div class="fc-msg">
+                ${m.fecha ? `<div class="fc-msg-f">${esc(m.fecha)}</div>` : ''}
+                <div class="fc-msg-t">${esc(m.texto || '')}</div>
+              </div>`).join('')
+          : '';
+
+        const porTipo = d.porTipo || {};
+        const notas = Array.isArray(porTipo[tab]) ? porTipo[tab] : [];
+        const notasHtml = notas.length
+          ? notas.map(n => `
+              <div class="fc-nota">
+                <div class="fc-nota-h">
+                  <span class="fc-nota-meta">${esc(n.fecha || '')}${n.autor ? ' · ' + esc(n.autor) : ''}</span>
+                  <button class="fc-nota-rm" data-id="${esc(n.id)}" title="Retirar esta anotación">✕</button>
+                </div>
+                <div class="fc-nota-t">${esc(n.texto || '')}</div>
+              </div>`).join('')
+          : `<div class="fc-nodata">Todavía no hay anotaciones de ${esc(tab.toLowerCase())}.</div>`;
+
+        cuerpo = `
+          ${notaReservaHtml}
+          <div class="fc-sec">Últimas visitas</div>
+          ${visitasHtml}
+          ${mensajesHtml}
+          <div class="fc-sec mt">Anotar</div>
+          <div class="fc-tabs">
+            <button class="fc-tab${tab === 'COLOR' ? ' on' : ''}" data-t="COLOR">🎨 Color</button>
+            <button class="fc-tab${tab === 'TRATAMIENTO' ? ' on' : ''}" data-t="TRATAMIENTO">💧 Tratamiento</button>
+            <button class="fc-tab${tab === 'GENERAL' ? ' on' : ''}" data-t="GENERAL">📝 General</button>
+          </div>
+          <textarea class="fc-ta" id="fcTa" placeholder="Escribe aquí la anotación de ${esc(tab.toLowerCase())}…">${esc(this._fcBorrador[tab] || '')}</textarea>
+          <div class="fc-actions">
+            <button class="fc-save" id="fcSave"${this._fcGuardando ? ' disabled' : ''}>${this._fcGuardando ? 'Guardando…' : 'Guardar anotación'}</button>
+          </div>
+          <div class="fc-sec mt">Histórico de ${esc(tab.toLowerCase())}</div>
+          ${notasHtml}`;
+      }
+
+      scrim.innerHTML = `
+        <div class="fc-modal">
+          <div class="fc-head">
+            <div>
+              <div class="fc-title">🎨 Ficha técnica${c.clientName ? ' · ' + esc(c.clientName) : ''}</div>
+              <div class="fc-sub">Cada anotación queda con su fecha y quién la escribió</div>
+            </div>
+            <button class="fc-x" id="fcX">✕</button>
+          </div>
+          ${this._fcBuscador ? `<div class="fc-search">
+            <input class="fc-input" id="fcQuery" type="search" placeholder="Buscar cliente por nombre o teléfono…" autocomplete="off">
+            <div class="fc-results" id="fcResults" style="display:none"></div>
+          </div>` : ''}
+          <div class="fc-body">${cuerpo}</div>
+          <div class="fc-foot">Las anotaciones no se sobrescriben: se añaden.</div>
+        </div>`;
+
+      scrim.querySelector('#fcX')?.addEventListener('click', () => this._closeFichaTecnica());
+      scrim.addEventListener('click', e => { if (e.target === scrim) this._closeFichaTecnica(); });
+
+      const q = scrim.querySelector('#fcQuery');
+      if (q) {
+        q.addEventListener('input', () => {
+          const val = q.value.trim();
+          clearTimeout(this._fcBuscarTimer);
+          if (val.length < 2) { this._fcRenderCli([]); return; }
+          this._fcBuscarTimer = setTimeout(() => this._sendToPage('ftBuscarCliente', { query: val }), 250);
+        });
+      }
+
+      scrim.querySelectorAll('.fc-tab').forEach(b => b.addEventListener('click', () => {
+        const ta = scrim.querySelector('#fcTa');
+        if (ta) this._fcBorrador[this._fcTab] = ta.value;
+        this._fcTab = b.getAttribute('data-t') || 'COLOR';
+        this._renderFichaTecnica();
+      }));
+
+      scrim.querySelector('#fcSave')?.addEventListener('click', () => this._guardarFichaTecnica());
+
+      scrim.querySelectorAll('.fc-nota-rm').forEach(b => b.addEventListener('click', () => {
+        const id = b.getAttribute('data-id');
+        if (!id) return;
+        if (!confirm('¿Retirar esta anotación de la ficha?')) return;
+        b.disabled = true;
+        this._sendToPage('quitarFichaCliente', { recordId: id });
+      }));
+    }
+
+    // v1.1.101 — El botón guarda TODO lo pendiente, no solo la pestaña
+    // visible. Antes, con tres borradores escritos y un único botón,
+    // solo se insertaba el de la pestaña abierta: los otros dos se
+    // quedaban en _fcBorrador y se perdían al cerrar el modal.
+    //
+    // Va UN SOLO mensaje con un array. El sendResponse del page code de
+    // Recepción PRO es un setAttribute directo, sin cola FIFO: tres
+    // mensajes seguidos harían que las respuestas se pisaran entre sí
+    // dentro del mismo tick.
+    _guardarFichaTecnica() {
+      const scrim = this.shadowRoot.getElementById('fcScrim');
+      const c = this._fcCtx;
+      if (!scrim || !c || !c.contactId) return;
+
+      // El textarea visible todavía no está volcado al borrador: solo
+      // se vuelca al cambiar de pestaña.
+      const ta = scrim.querySelector('#fcTa');
+      if (ta) this._fcBorrador[this._fcTab] = String(ta.value || '');
+
+      const pendientes = ['COLOR', 'TRATAMIENTO', 'GENERAL']
+        .map(tipo => ({ recordType: tipo, recordText: String(this._fcBorrador[tipo] || '').trim() }))
+        .filter(a => a.recordText);
+
+      if (!pendientes.length) { this._toast('Escribe algo antes de guardar'); return; }
+
+      this._fcGuardando = true;
+      this._renderFichaTecnica();
+
+      this._sendToPage('guardarFichaCliente', {
+        contactId:   c.contactId,
+        clientName:  c.clientName || '',
+        clientPhone: c.clientPhone || '',
+        anotaciones: pendientes,
+        // Vacío cuando la ficha se abre desde la barra: la anotación es del
+        // cliente, no de una visita concreta.
+        reservaId:   c.reservaId || ''
+      });
+    }
+
+    _onFichaClienteRecords(p) {
+      this._fcCargando = false;
+      const d = (p && p.data) ? p.data : { ok: false };
+      this._fcData = d;
+      if (!d.ok) this._toast(`No se pudo cargar la ficha${d.error?.message ? ': ' + d.error.message : ''}`);
+      this._renderFichaTecnica();
+    }
+
+    // v1.1.101 — La respuesta trae ahora una LISTA de anotaciones, una
+    // por cada borrador que se guardó en la misma pulsación. Se admite
+    // también el formato antiguo de una sola por compatibilidad.
+    _onFichaClienteGuardada(p) {
+      this._fcGuardando = false;
+      const d = (p && p.data) ? p.data : { ok: false };
+
+      if (!d.ok) {
+        this._toast(`No se pudo guardar${d.error?.message ? ': ' + d.error.message : ''}`);
+        this._renderFichaTecnica();
+        return;
+      }
+
+      const guardadas = Array.isArray(d.anotaciones)
+        ? d.anotaciones.filter(Boolean)
+        : (d.anotacion ? [d.anotacion] : []);
+
+      if (!this._fcData) this._fcData = { ok: true, anotaciones: [], porTipo: {}, visitas: [], mensajeCliente: [] };
+      if (!this._fcData.porTipo) this._fcData.porTipo = {};
+      if (!Array.isArray(this._fcData.anotaciones)) this._fcData.anotaciones = [];
+
+      for (const anotacion of guardadas) {
+        const tipo = anotacion.tipo || this._fcTab;
+        if (!Array.isArray(this._fcData.porTipo[tipo])) this._fcData.porTipo[tipo] = [];
+        this._fcData.porTipo[tipo].unshift(anotacion);
+        this._fcData.anotaciones.unshift(anotacion);
+        this._fcBorrador[tipo] = '';
+      }
+
+      // Los fallos parciales se dicen: si de tres borradores solo entran
+      // dos, el operador tiene que saber cuál se quedó fuera. El que
+      // falla conserva su borrador y sigue en pantalla.
+      const fallidas = Array.isArray(d.fallidas) ? d.fallidas.filter(Boolean) : [];
+      if (fallidas.length) {
+        const nombres = fallidas.map(f => String(f.tipo || '').toLowerCase()).filter(Boolean).join(', ');
+        this._toast(`No se pudo guardar: ${nombres || 'alguna anotación'}`);
+      } else {
+        this._toast(guardadas.length > 1 ? `${guardadas.length} anotaciones guardadas ✓` : 'Anotación guardada ✓');
+      }
+
+      this._renderFichaTecnica();
+    }
+
+    _onFichaClienteQuitada(p) {
+      const d = (p && p.data) ? p.data : { ok: false };
+      const id = (p && p.recordId) || '';
+
+      if (!d.ok) {
+        this._toast(`No se pudo retirar${d.error?.message ? ': ' + d.error.message : ''}`);
+        this._renderFichaTecnica();
+        return;
+      }
+
+      // Se retira de TODAS las listas derivadas, no solo de la visible.
+      if (this._fcData) {
+        if (Array.isArray(this._fcData.anotaciones)) {
+          this._fcData.anotaciones = this._fcData.anotaciones.filter(a => a.id !== id);
+        }
+        const pt = this._fcData.porTipo || {};
+        Object.keys(pt).forEach(k => {
+          if (Array.isArray(pt[k])) pt[k] = pt[k].filter(a => a.id !== id);
+        });
+        this._fcData.porTipo = pt;
+      }
+
+      this._toast('Anotación retirada');
+      this._renderFichaTecnica();
+    }
+
+    // ═══════════════════════════════════════════════════
+    // v1.1.69 — ESPECIALES (venta manual PRIME/Bonos/Tarjetas)
+    // ═══════════════════════════════════════════════════
+    _openEspeciales() {
+      this._espCliente = null;
+      this._espNuevoAbierto = false;
+      this._espTab = 'bono';
+      this._espBonoIdx = -1;
+      this._espCampIdx = -1;
+      this._espRegalo = false;
+      this._espMetodo = 'Efectivo';
+      this._espEmitiendo = false;
+      this._espMsg = null;
+      // v1.1.75 — descuento manual del operador (mismo modelo que el cobro normal)
+      this._espDisc = 0;
+      this._espDiscMode = 'pct';
+      this._espDiscOpen = false;
+      const root = this.shadowRoot;
+      root.getElementById('espScrim')?.remove();
+      const scrim = document.createElement('div');
+      scrim.className = 'esp-scrim';
+      scrim.id = 'espScrim';
+      root.appendChild(scrim);
+      this._renderEsp();
+      // Datos frescos: config PRIME + servicios con bono + campañas vigentes.
+      this._sendToPage('getEspecialesData', {});
+    }
+
+    _closeEspeciales() {
+      this.shadowRoot.getElementById('espScrim')?.remove();
+    }
+
+    _renderEsp() {
+      const scrim = this.shadowRoot.getElementById('espScrim');
+      if (!scrim) return;
+      const cli = this._espCliente;
+      const data = this._espData;
+      const tab = this._espTab;
+
+      // ── Bloque cliente ──
+      let cliHTML;
+      if (cli) {
+        cliHTML = `<div class="esp-chip">
+          <div><div class="esp-cli-name">${esc(cli.nombre || 'Cliente')}</div>
+          <div class="esp-cli-sub">${esc(cli.telefono || '')}${cli.email ? ' · ' + esc(cli.email) : ''}</div></div>
+          <button class="esp-link" id="espCliChange">Cambiar</button>
+        </div>`;
+      } else if (this._espNuevoAbierto) {
+        const d = this._espNvDraft || {};
+        cliHTML = `<div class="esp-row2">
+            <input class="esp-input" id="espNvNombre" placeholder="Nombre *" autocomplete="off" value="${esc(d.nombre || '')}" />
+            <input class="esp-input" id="espNvApellido" placeholder="Apellido" autocomplete="off" value="${esc(d.apellido || '')}" />
+          </div>
+          <div class="esp-row2" style="margin-top:8px;">
+            <input class="esp-input" id="espNvTel" placeholder="Teléfono" autocomplete="off" value="${esc(d.telefono || '')}" />
+            <input class="esp-input" id="espNvEmail" placeholder="Email" autocomplete="off" value="${esc(d.email || '')}" />
+          </div>
+          <div class="esp-row2" style="margin-top:8px;">
+            <button class="esp-link" id="espNvCancel">Cancelar</button>
+            <button class="esp-emit" id="espNvSave" style="margin-top:0;padding:9px;">Guardar cliente</button>
+          </div>`;
+      } else {
+        cliHTML = `<input class="esp-input" id="espCliBuscar" placeholder="Buscar por nombre, teléfono o email…" autocomplete="off" />
+          <div id="espCliResults"></div>
+          <button class="esp-link" id="espCliNuevo">+ Cliente nuevo</button>`;
+      }
+
+      // ── Bloque producto ──
+      let prodHTML = '';
+      if (!data) {
+        prodHTML = `<div class="esp-muted">Cargando productos…</div>`;
+      } else if (tab === 'prime') {
+        const cfg = data.config || {};
+        const precio = (typeof cfg.primeAnnualPrice === 'number') ? cfg.primeAnnualPrice : 0;
+        const meses = (typeof cfg.primeDurationMonths === 'number') ? cfg.primeDurationMonths : 12;
+        prodHTML = `<div class="esp-price">Tarjeta PRIME — ${precio}€ <small>· ${meses} meses de vigencia</small></div>`;
+      } else if (tab === 'bono') {
+        const servicios = data.servicios || [];
+        if (!servicios.length) {
+          prodHTML = `<div class="esp-muted">No hay servicios con bono activo.</div>`;
+        } else {
+          const opts = servicios.map((s, i) => `<option value="${i}"${i === this._espBonoIdx ? ' selected' : ''}>${esc(s.label)}</option>`).join('');
+          prodHTML = `<select class="esp-select" id="espBonoSel"><option value="-1">— Elige un servicio con bono —</option>${opts}</select>`;
+          const s = servicios[this._espBonoIdx];
+          if (s) {
+            prodHTML += `<div class="esp-price">${s.bonoNumero} sesiones — ${s.precioBonoCalculado}€ <small>· ${s.bonoDescuento}% dto sobre ${s.precioBrutoCalculado}€</small></div>`;
+          }
+        }
+      } else if (tab === 'tarjeta') {
+        const camps = data.campaigns || [];
+        if (!camps.length) {
+          prodHTML = `<div class="esp-muted">No hay campañas de tarjeta vigentes.</div>`;
+        } else {
+          const opts = camps.map((c, i) => `<option value="${i}"${i === this._espCampIdx ? ' selected' : ''}>${esc(c.name || c.serviceLabel || 'Tarjeta')}</option>`).join('');
+          prodHTML = `<select class="esp-select" id="espCampSel"><option value="-1">— Elige una campaña —</option>${opts}</select>`;
+          const c = camps[this._espCampIdx];
+          if (c) {
+            prodHTML += `<div class="esp-price">${c.promoPrice}€${c.serviceLabel ? ` <small>· ${esc(c.serviceLabel)}</small>` : ''}</div>`;
+            prodHTML += `<div class="esp-gift">
+              <label class="esp-muted"><input type="checkbox" id="espRegalo"${this._espRegalo ? ' checked' : ''}/> Es un regalo</label>
+              ${this._espRegalo ? `<div class="esp-row2" style="margin-top:8px;">
+                <input class="esp-input" id="espRecNombre" placeholder="Nombre destinatario *" autocomplete="off" />
+                <input class="esp-input" id="espRecEmail" placeholder="Email destinatario *" autocomplete="off" />
+              </div>
+              <input class="esp-input" id="espRecMsg" placeholder="Mensaje (opcional)" autocomplete="off" style="margin-top:8px;" />` : ''}
+            </div>`;
+          }
+        }
+      }
+
+      const precio = this._espPrecioActual();
+      const payHTML = ['Efectivo', 'Tarjeta', 'Bizum']
+        .map(m => `<button class="esp-paybtn${this._espMetodo === m ? ' active' : ''}" data-m="${m}">${m}</button>`).join('');
+      const puede = this._espPuedeEmitir();
+
+      // v1.1.75 — Card de descuento manual (misma UI %/€ que el cobro normal,
+      // clases .ks-disc-*). Solo cuando hay producto elegido con precio > 0.
+      const _disc = this._espCalcDescuento();
+      const hayDesc = _disc.discEur > 0;
+      const precioNeto = _disc.neto;
+      let discHTML = '';
+      if (precio > 0) {
+        let inner;
+        if (this._espDisc > 0 || this._espDiscOpen) {
+          const mode = this._espDiscMode || 'pct';
+          const maxAttr = mode === 'eur' ? '' : 'max="100"';
+          const stepAttr = mode === 'eur' ? 'step="0.01"' : 'step="1"';
+          const unit = mode === 'eur' ? '€' : '%';
+          inner = `<div class="ks-disc-row">
+            <span class="ks-disc-lbl">🏷 Descuento</span>
+            <div class="ks-disc-mode">
+              <button class="ks-disc-mbtn ${mode === 'pct' ? 'sel' : ''}" data-espmode="pct" title="Porcentaje">%</button>
+              <button class="ks-disc-mbtn ${mode === 'eur' ? 'sel' : ''}" data-espmode="eur" title="Importe en euros">€</button>
+            </div>
+            <div class="ks-disc-input">
+              <input id="espDiscInput" type="number" min="0" ${maxAttr} ${stepAttr} value="${this._espDisc || ''}" placeholder="0">
+              <span>${unit}</span>
+            </div>
+            <button class="ks-disc-clear" id="espDiscClear">✕</button>
+          </div>`;
+        } else {
+          inner = `<button class="ks-disc-toggle" id="espDiscToggle">＋ Aplicar descuento</button>`;
+        }
+        const resLine = `<div id="espDiscResult" style="margin-top:8px;font-size:12px;color:var(--ks-ink2)">${hayDesc ? `Cobrará <b style="color:var(--ks-ink)">${precioNeto}€</b> · antes <span style="text-decoration:line-through">${precio}€</span>` : ''}</div>`;
+        discHTML = `<div class="esp-sec"><span class="esp-eyebrow">Descuento (opcional)</span>${inner}${resLine}</div>`;
+      }
+      const emitLabel = this._espEmitiendo
+        ? 'Emitiendo…'
+        : (precio > 0 ? `Emitir y cobrar · ${hayDesc ? precioNeto : precio}€` : 'Emitir y cobrar');
+
+      scrim.innerHTML = `<div class="esp-modal">
+        <div class="esp-head"><span class="esp-title">✦ ESPECIALES · Venta manual</span><button class="esp-x" id="espX">✕</button></div>
+        <div class="esp-body">
+          <div class="esp-sec"><span class="esp-eyebrow">Cliente</span>${cliHTML}</div>
+          <div class="esp-sec"><span class="esp-eyebrow">Producto</span>
+            <div class="esp-tabs">
+              <button class="esp-tab${tab === 'prime' ? ' active' : ''}" data-tab="prime">⭐ PRIME</button>
+              <button class="esp-tab${tab === 'bono' ? ' active' : ''}" data-tab="bono">🎟️ Bono</button>
+              <button class="esp-tab${tab === 'tarjeta' ? ' active' : ''}" data-tab="tarjeta">🎁 Tarjeta</button>
+            </div>
+            ${prodHTML}
+          </div>
+          <div class="esp-sec"><span class="esp-eyebrow">Método de pago</span><div class="esp-pay">${payHTML}</div></div>
+          ${discHTML}
+          ${this._espMsg ? `<div class="esp-notice ${this._espMsg.tipo}"><span>${esc(this._espMsg.texto)}</span>${this._espMsg.accion ? `<button class="esp-notice-act" id="espMsgAct">${esc(this._espMsg.accion.label)}</button>` : ''}</div>` : ''}
+          <button class="esp-emit" id="espEmit"${puede ? '' : ' disabled'}>${emitLabel}</button>
+        </div>
+      </div>`;
+      this._espRewire();
+    }
+
+    _espRewire() {
+      const scrim = this.shadowRoot.getElementById('espScrim');
+      if (!scrim) return;
+      const $ = (id) => scrim.querySelector('#' + id);
+      const clr = () => { this._espMsg = null; };
+
+      $('espX') && $('espX').addEventListener('click', () => this._closeEspeciales());
+
+      const buscar = $('espCliBuscar');
+      if (buscar) {
+        buscar.addEventListener('input', e => {
+          const q = e.target.value;
+          clearTimeout(this._espBuscarTimer);
+          if (q.trim().length < 2) { this._renderEspCli([]); return; }
+          this._espBuscarTimer = setTimeout(() => this._sendToPage('espBuscarCliente', { query: q }), 250);
+        });
+      }
+      $('espCliNuevo') && $('espCliNuevo').addEventListener('click', () => { clr(); this._espNvDraft = {}; this._espNuevoAbierto = true; this._renderEsp(); });
+      $('espCliChange') && $('espCliChange').addEventListener('click', () => { clr(); this._espCliente = null; this._renderEsp(); });
+      $('espNvCancel') && $('espNvCancel').addEventListener('click', () => { clr(); this._espNuevoAbierto = false; this._renderEsp(); });
+      $('espNvSave') && $('espNvSave').addEventListener('click', () => this._espGuardarNuevo());
+
+      scrim.querySelectorAll('.esp-tab').forEach(b => b.addEventListener('click', () => {
+        clr(); this._espTab = b.getAttribute('data-tab'); this._renderEsp();
+      }));
+
+      $('espBonoSel') && $('espBonoSel').addEventListener('change', e => { clr(); this._espBonoIdx = parseInt(e.target.value, 10); this._renderEsp(); });
+      $('espCampSel') && $('espCampSel').addEventListener('change', e => { clr(); this._espCampIdx = parseInt(e.target.value, 10); this._renderEsp(); });
+      $('espRegalo') && $('espRegalo').addEventListener('change', e => { clr(); this._espRegalo = e.target.checked; this._renderEsp(); });
+
+      scrim.querySelectorAll('.esp-paybtn').forEach(b => b.addEventListener('click', () => {
+        this._espMetodo = b.getAttribute('data-m'); this._renderEsp();
+      }));
+
+      // v1.1.75 — Descuento manual. Input: actualización en sitio (sin re-render,
+      // para no perder el foco). Modo/toggle/limpiar: re-render completo.
+      const espDiscInput = $('espDiscInput');
+      if (espDiscInput) {
+        espDiscInput.addEventListener('input', e => {
+          let v = parseFloat(e.target.value) || 0;
+          if (v < 0) v = 0;
+          if (this._espDiscMode === 'pct' && v > 100) v = 100;
+          this._espDisc = v;
+          this._espUpdateEmit();
+        });
+      }
+      scrim.querySelectorAll('.ks-disc-mbtn[data-espmode]').forEach(b => b.addEventListener('click', () => {
+        const nuevo = b.getAttribute('data-espmode');
+        if (nuevo === this._espDiscMode) return;
+        this._espDiscMode = nuevo;
+        if (nuevo === 'pct' && this._espDisc > 100) this._espDisc = 100;
+        this._renderEsp();
+      }));
+      $('espDiscToggle') && $('espDiscToggle').addEventListener('click', () => { this._espDiscOpen = true; this._renderEsp(); });
+      $('espDiscClear') && $('espDiscClear').addEventListener('click', () => { this._espDisc = 0; this._espDiscOpen = false; this._espDiscMode = 'pct'; this._renderEsp(); });
+
+      $('espMsgAct') && $('espMsgAct').addEventListener('click', () => {
+        const a = this._espMsg && this._espMsg.accion;
+        this._espMsg = null;
+        if (a && a.tipo === 'prime') this._espTab = 'prime';
+        this._renderEsp();
+      });
+
+      $('espEmit') && $('espEmit').addEventListener('click', () => this._espEmitir());
+    }
+
+    _renderEspCli(clientes) {
+      const scrim = this.shadowRoot.getElementById('espScrim');
+      if (!scrim) return;
+      const wrap = scrim.querySelector('#espCliResults');
+      if (!wrap) return;
+      if (!clientes || !clientes.length) { wrap.innerHTML = ''; return; }
+      this._espUltimosCli = clientes;
+      wrap.innerHTML = `<div class="esp-cli-results">${clientes.map((c, i) => `
+        <div class="esp-cli-item" data-idx="${i}">
+          <div class="esp-cli-name">${esc(c.nombreCompleto || c.nombre || 'Sin nombre')}</div>
+          <div class="esp-cli-sub">${esc(c.telefono || '')}${c.email ? ' · ' + esc(c.email) : ''}</div>
+        </div>`).join('')}</div>`;
+      wrap.querySelectorAll('.esp-cli-item').forEach(it => it.addEventListener('click', () => {
+        this._espSelectCliente(this._espUltimosCli[parseInt(it.getAttribute('data-idx'), 10)]);
+      }));
+    }
+
+    _espSelectCliente(c) {
+      if (!c) return;
+      this._espCliente = { contactId: c.contactId || '', nombre: c.nombreCompleto || c.nombre || '', telefono: c.telefono || '', email: c.email || '' };
+      this._espNuevoAbierto = false;
+      this._renderEsp();
+    }
+
+    _espGuardarNuevo() {
+      const scrim = this.shadowRoot.getElementById('espScrim');
+      if (!scrim) return;
+      const elNom = scrim.querySelector('#espNvNombre');
+      const nombre = (elNom?.value || '').trim();
+      // Guardamos lo escrito por si la creación falla y hay que repintar el form.
+      this._espNvDraft = {
+        nombre,
+        apellido: (scrim.querySelector('#espNvApellido')?.value || '').trim(),
+        telefono: (scrim.querySelector('#espNvTel')?.value || '').trim(),
+        email: (scrim.querySelector('#espNvEmail')?.value || '').trim()
+      };
+      if (!nombre) { if (elNom) { elNom.style.borderColor = '#d9a54d'; elNom.focus(); } return; }
+      this._sendToPage('espCrearCliente', this._espNvDraft);
+    }
+
+    _onEspClienteCreado(data) {
+      if (data && data.ok && data.cliente) {
+        this._espNvDraft = {};
+        this._espSelectCliente(data.cliente);
+      } else {
+        this._espMsg = { tipo: 'warn', texto: 'No se ha podido guardar el cliente. Revisa los datos e inténtalo de nuevo.' };
+        this._renderEsp();
+      }
+    }
+
+    _onEspData(p) {
+      this._espData = { config: p.config || null, servicios: p.servicios || [], campaigns: p.campaigns || [] };
+      if (this.shadowRoot.getElementById('espScrim') && !this._espNuevoAbierto) this._renderEsp();
+    }
+
+    _espPrecioActual() {
+      const d = this._espData; if (!d) return 0;
+      if (this._espTab === 'prime') return (d.config && typeof d.config.primeAnnualPrice === 'number') ? d.config.primeAnnualPrice : 0;
+      if (this._espTab === 'bono') { const s = (d.servicios || [])[this._espBonoIdx]; return s ? (s.precioBonoCalculado || 0) : 0; }
+      if (this._espTab === 'tarjeta') { const c = (d.campaigns || [])[this._espCampIdx]; return c ? (c.promoPrice || 0) : 0; }
+      return 0;
+    }
+
+    // v1.1.75 — Descuento manual del operador. Calcado de _calcDescuento (cobro
+    // normal) pero sobre el precio de la pestaña activa (sin promo encadenada:
+    // ESPECIALES no tiene descuento promocional de servicio). Modo % o €.
+    _espCalcDescuento() {
+      const subtotal = Math.round((this._espPrecioActual() || 0) * 100) / 100;
+      const v = Math.max(0, Number(this._espDisc) || 0);
+      let discEur, discPct;
+      if (this._espDiscMode === 'eur') {
+        discEur = Math.min(v, subtotal);                                   // no más que el subtotal
+        discPct = subtotal > 0 ? Math.round((discEur / subtotal) * 10000) / 100 : 0;
+      } else {
+        discPct = Math.min(100, v);
+        discEur = Math.round(subtotal * discPct) / 100;
+      }
+      const neto = Math.max(0, Math.round((subtotal - discEur) * 100) / 100);
+      return { subtotal, discPct, discEur, neto };
+    }
+
+    // v1.1.75 — Actualiza SOLO el botón y la línea de resultado sin re-render
+    // (para no perder el foco del input mientras se teclea el descuento),
+    // igual que _updateTotal hace en el cobro normal.
+    _espUpdateEmit() {
+      const scrim = this.shadowRoot.getElementById('espScrim');
+      if (!scrim) return;
+      const precio = this._espPrecioActual();
+      const { discEur, neto } = this._espCalcDescuento();
+      const hayDesc = discEur > 0;
+      const btn = scrim.querySelector('#espEmit');
+      if (btn && !this._espEmitiendo) {
+        btn.innerHTML = precio > 0 ? `Emitir y cobrar · ${hayDesc ? neto : precio}€` : 'Emitir y cobrar';
+      }
+      const res = scrim.querySelector('#espDiscResult');
+      if (res) {
+        res.innerHTML = hayDesc
+          ? `Cobrará <b style="color:var(--ks-ink)">${neto}€</b> · antes <span style="text-decoration:line-through">${precio}€</span>`
+          : '';
+      }
+    }
+
+    _espPuedeEmitir() {
+      if (this._espEmitiendo) return false;
+      if (!this._espCliente || !this._espCliente.contactId) return false;
+      if (this._espTab === 'prime') return true;
+      if (this._espTab === 'bono') return this._espBonoIdx >= 0 && !!((this._espData && this._espData.servicios) || [])[this._espBonoIdx];
+      if (this._espTab === 'tarjeta') return this._espCampIdx >= 0 && !!((this._espData && this._espData.campaigns) || [])[this._espCampIdx];
+      return false;
+    }
+
+    _espEmitir() {
+      if (!this._espPuedeEmitir()) return;
+      this._espMsg = null;
+      const cli = this._espCliente;
+      const base = { contactId: cli.contactId, clientName: cli.nombre, buyerEmail: cli.email || '', buyerPhone: cli.telefono || '', metodoPago: this._espMetodo };
+      // v1.1.75 — Descuento manual: se manda el NETO ya calculado + el token
+      // (mismo formato exacto que el cobro normal). El backend clampa a [0..base].
+      const { discPct, discEur, neto } = this._espCalcDescuento();
+      if (discEur > 0) {
+        base.importeNeto = neto;
+        base.descripcionExtra = this._espDiscMode === 'eur'
+          ? `🏷️ Descuento -${discEur}€`
+          : `🏷️ Descuento -${discPct}% (-${discEur}€)`;
+      }
+      const scrim = this.shadowRoot.getElementById('espScrim');
+
+      if (this._espTab === 'prime') {
+        this._espEmitiendo = true; this._renderEsp();
+        this._sendToPage('emitirPrime', { payload: base });
+
+      } else if (this._espTab === 'bono') {
+        const s = this._espData.servicios[this._espBonoIdx];
+        this._espEmitiendo = true; this._renderEsp();
+        this._sendToPage('emitirBono', { payload: Object.assign({}, base, { serviceSetupUid: s.setupUid }) });
+
+      } else if (this._espTab === 'tarjeta') {
+        const c = this._espData.campaigns[this._espCampIdx];
+        const payload = Object.assign({}, base, { campaignId: c._id, isGift: this._espRegalo });
+        if (this._espRegalo && scrim) {
+          const rn = scrim.querySelector('#espRecNombre'), re = scrim.querySelector('#espRecEmail');
+          payload.recipientName = (rn?.value || '').trim();
+          payload.recipientEmail = (re?.value || '').trim();
+          payload.recipientMessage = (scrim.querySelector('#espRecMsg')?.value || '').trim();
+          if (!payload.recipientName || !payload.recipientEmail) {
+            if (!payload.recipientName && rn) { rn.style.borderColor = '#d9a54d'; rn.focus(); }
+            if (!payload.recipientEmail && re) { re.style.borderColor = '#d9a54d'; if (payload.recipientName) re.focus(); }
+            return;
+          }
+        }
+        this._espEmitiendo = true; this._renderEsp();
+        this._sendToPage('emitirTarjeta', { payload });
+      }
+    }
+
+    _onEspEmitido(tipo, data) {
+      this._espEmitiendo = false;
+      const nom = (this._espCliente && this._espCliente.nombre ? this._espCliente.nombre.split(/\s+/)[0] : 'el cliente');
+      if (data && data.success) {
+        const label = { bono: 'El bono', prime: 'La tarjeta PRIME', tarjeta: 'La tarjeta' }[tipo] || 'El producto';
+        this._espMsg = { tipo: 'ok', texto: `¡Listo! ${label} ya está activa para ${nom}.` };
+        this._renderEsp();
+        clearTimeout(this._espCloseTimer);
+        this._espCloseTimer = setTimeout(() => this._closeEspeciales(), 1700);
+        return;
+      }
+      if (data && data.needsPrime) {
+        this._espMsg = {
+          tipo: 'warn',
+          texto: `Los bonos son un detalle para socios del Club PRIME, y ${nom} todavía no forma parte. Puedes darle de alta la tarjeta PRIME y, ya dentro, ofrecerle el bono.`,
+          accion: { label: 'Dar de alta PRIME', tipo: 'prime' }
+        };
+      } else if (data && data.alreadyHasVoucher) {
+        const svc = (this._espData && this._espData.servicios[this._espBonoIdx] && this._espData.servicios[this._espBonoIdx].label) || 'ese servicio';
+        this._espMsg = { tipo: 'warn', texto: `${nom} ya tiene un bono en marcha de ${svc}. Cuando lo termine, podrás ofrecerle uno nuevo.` };
+      } else if (data && data.alreadyActive) {
+        this._espMsg = { tipo: 'warn', texto: `${nom} ya es socio del Club PRIME, no hace falta activarla de nuevo.` };
+      } else {
+        this._espMsg = { tipo: 'warn', texto: 'No se ha podido completar la venta. Inténtalo de nuevo en un momento.' };
+      }
+      this._renderEsp();
     }
   }
 

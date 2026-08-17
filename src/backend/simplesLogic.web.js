@@ -392,7 +392,7 @@ export const reservarSimple = webMethod(
     const t0 = Date.now();
     try {
       console.log(`${TAG} \ud83c\udfaf Reservar simple: ${serviceId} | ${fechaISO} ${horaHHmm} | staff=${empleadoId} | dur_param=${durationMinutes}min | price_param=${price}\u20ac${origenRecepcion ? ' [SKIP-AVAILABILITY]' : ''}`);
-
+console.warn(`${TAG} 📅 Reserva entrante: fecha=${fechaISO} hora=${horaHHmm} servicio=${serviceId} variante=${variantLabel||'-'} cliente=${contactDetails?.firstName||''} ${contactDetails?.lastName||''} tel=${contactDetails?.phone||''} origen=${origenRecepcion?'RECEPCION':'WEB'}`);
       // ── 1. Leer servicio de Wix para obtener scheduleId, location, duración y precio REALES ──
       const elevatedGet = elevate(services.getService);
       const svcResult = await elevatedGet(serviceId);
@@ -600,3 +600,4 @@ export const reservarSimple = webMethod(
     }
   }
 );
+

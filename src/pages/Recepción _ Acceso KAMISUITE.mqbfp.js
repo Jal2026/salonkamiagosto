@@ -5,6 +5,9 @@ const REPEATER_ID = "#repeater1";
 const BOTON_ID = "#boton";
 const CARD_ID = "#COM";
 
+// Bola flotante / Chat IA
+const CHAT_IA_ID = "#f6B6E28D52B24De6Aab3Ff2Ccad8E2291";
+
 const URL_DESKTOP_COMUNICACIONES = "/recepcioncomunicaciones";
 const URL_MOBILE_COMUNICACIONES = "/recepcioncomunicacionesmobile";
 
@@ -15,11 +18,35 @@ const URL_MOBILE_COMUNICACIONES = "/recepcioncomunicacionesmobile";
 const INDICE_COMUNICACIONES = 2;
 
 $w.onReady(function () {
+  ocultarBolaChatIA();
   configurarMenuPrincipal();
 
-  // Refuerzo por si Wix termina de pintar el repeater unos ms después
-  setTimeout(configurarMenuPrincipal, 500);
+  // Refuerzo por si Wix termina de pintar elementos unos ms después
+  setTimeout(() => {
+    ocultarBolaChatIA();
+    configurarMenuPrincipal();
+  }, 500);
+
+  // Segundo refuerzo específico por si el chat IA aparece más tarde
+  setTimeout(() => {
+    ocultarBolaChatIA();
+  }, 1500);
 });
+
+function ocultarBolaChatIA() {
+  try {
+    $w(CHAT_IA_ID).hide();
+
+    console.log("[Chat IA] Bola flotante ocultada", {
+      id: CHAT_IA_ID
+    });
+  } catch (e) {
+    console.warn("[Chat IA] No se pudo ocultar. Revisa si el ID existe en esta página.", {
+      id: CHAT_IA_ID,
+      error: e
+    });
+  }
+}
 
 function configurarMenuPrincipal() {
   $w(REPEATER_ID).forEachItem(($item, itemData, index) => {

@@ -4,15 +4,33 @@
 // PÁGINA: Edición Categorías (admin)
 // WIDGET: #htmlEdicionCategorias (HTML embed con editor_categorias.html)
 //
-// VERSIÓN: 1.0.0
-// FECHA: 21 de junio de 2026
+// VERSIÓN: 1.1.0
+// FECHA: 8 de julio de 2026
 //
 // Edita el CMS HairSalonServices (primer nivel de Tour de Servicios).
-// Mensajes del widget:
+//
+// CHANGELOG:
+//
+// v1.1.0 (8-jul-2026) — CRUD COMPLETO. Nuevos mensajes del widget:
+//   · createCategoria    → crea una categoría nueva (alta)
+//   · duplicateCategoria → clona una existente con nuevo título
+//   · deleteCategoria    → borrado hard con confirmación previa (widget)
+//
+//   Las respuestas al widget se emiten con nombres simétricos:
+//   · categoriaCreated / categoriaCreateError
+//   · categoriaDuplicated / categoriaDuplicateError
+//   · categoriaDeleted / categoriaDeleteError
+//
+// v1.0.0 (21-jun-2026) — Versión inicial. Solo edición y toggle.
+//
+// Mensajes del widget (contrato completo v1.1.0):
 //   ready                → cargar categorías
 //   saveCategoria        → actualizar textos + groupCatalog + orden
 //   toggleCategoria      → activo/inactivo
 //   uploadCategoriaImage → subir imagen
+//   createCategoria      → v1.1.0 · alta nueva
+//   duplicateCategoria   → v1.1.0 · duplicar existente
+//   deleteCategoria      → v1.1.0 · borrar existente
 //
 // IMPORTANTE: ajusta el ID del elemento HTML (#htmlEdicionCategorias) al
 // que tengas en el editor de Wix si fuera distinto.
@@ -22,10 +40,13 @@ import {
   listarCategorias,
   actualizarCategoria,
   toggleCategoriaActiva,
-  uploadImagenCategoria
+  uploadImagenCategoria,
+  crearCategoria,
+  duplicarCategoria,
+  eliminarCategoria
 } from 'backend/categoriasEditorLogic.web';
 
-const TAG = '[EdicionCategorias]';
+const TAG = '[EdicionCategorias][1.1.0]';
 
 $w.onReady(async function () {
   console.log(`${TAG} ✅ Página cargada`);
@@ -52,6 +73,17 @@ $w.onReady(async function () {
 
     if (msg.type === 'uploadCategoriaImage') {
       await subirImagen(widget, msg.payload);
+    }
+
+    // v1.1.0 · CRUD nuevo
+    if (msg.type === 'createCategoria') {
+      await crearCategoriaHandler(widget, msg.payload);
+    }
+    if (msg.type === 'duplicateCategoria') {
+      await duplicarCategoriaHandler(widget, msg.payload);
+    }
+    if (msg.type === 'deleteCategoria') {
+      await eliminarCategoriaHandler(widget, msg.payload);
     }
   });
 });
@@ -81,7 +113,7 @@ async function cargarDatos(widget) {
 }
 
 // ═══════════════════════════════════════════════════
-// GUARDAR CATEGORÍA
+// GUARDAR CATEGORÍA (update de existente)
 // ═══════════════════════════════════════════════════
 async function guardarCategoria(widget, payload) {
   try {
@@ -140,5 +172,68 @@ async function subirImagen(widget, payload) {
   } catch (error) {
     console.error(`${TAG} ❌ Error subiendo imagen:`, error);
     widget.postMessage({ type: 'categoriaImageError', message: error.message });
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// v1.1.0 · CREAR CATEGORÍA
+// ═══════════════════════════════════════════════════
+async function crearCategoriaHandler(widget, payload) {
+  try {
+    console.log(`${TAG} ✨ Creando categoría:`, payload && payload.title);
+    const result = await crearCategoria(payload || {});
+
+    if (result.success) {
+      console.log(`${TAG} ✅ Categoría creada: ${result.categoria && result.categoria._id}`);
+      widget.postMessage({ type: 'categoriaCreated', payload: result });
+    } else {
+      console.warn(`${TAG} ⚠️ Alta rechazada:`, result.error);
+      widget.postMessage({ type: 'categoriaCreateError', message: result.error });
+    }
+  } catch (error) {
+    console.error(`${TAG} ❌ Error creando categoría:`, error);
+    widget.postMessage({ type: 'categoriaCreateError', message: error.message });
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// v1.1.0 · DUPLICAR CATEGORÍA
+// ═══════════════════════════════════════════════════
+async function duplicarCategoriaHandler(widget, payload) {
+  try {
+    console.log(`${TAG} 📋 Duplicando categoría:`, payload && payload.catId, '→', payload && payload.nuevoTitle);
+    const result = await duplicarCategoria(payload || {});
+
+    if (result.success) {
+      console.log(`${TAG} ✅ Categoría duplicada: ${result.categoria && result.categoria._id}`);
+      widget.postMessage({ type: 'categoriaDuplicated', payload: result });
+    } else {
+      console.warn(`${TAG} ⚠️ Duplicado rechazado:`, result.error);
+      widget.postMessage({ type: 'categoriaDuplicateError', message: result.error });
+    }
+  } catch (error) {
+    console.error(`${TAG} ❌ Error duplicando:`, error);
+    widget.postMessage({ type: 'categoriaDuplicateError', message: error.message });
+  }
+}
+
+// ═══════════════════════════════════════════════════
+// v1.1.0 · ELIMINAR CATEGORÍA
+// ═══════════════════════════════════════════════════
+async function eliminarCategoriaHandler(widget, payload) {
+  try {
+    console.log(`${TAG} 🗑️ Eliminando categoría:`, payload && payload.catId);
+    const result = await eliminarCategoria(payload || {});
+
+    if (result.success) {
+      console.log(`${TAG} ✅ Categoría eliminada: "${result.titleEliminado}"`);
+      widget.postMessage({ type: 'categoriaDeleted', payload: result });
+    } else {
+      console.warn(`${TAG} ⚠️ Borrado rechazado:`, result.error);
+      widget.postMessage({ type: 'categoriaDeleteError', message: result.error });
+    }
+  } catch (error) {
+    console.error(`${TAG} ❌ Error eliminando:`, error);
+    widget.postMessage({ type: 'categoriaDeleteError', message: error.message });
   }
 }
